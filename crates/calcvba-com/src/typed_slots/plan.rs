@@ -146,3 +146,138 @@ pub fn visible_signature(member: &TypeLibMemberMetadata, supplied: usize) -> Opt
     let result = member.return_type.map(carrier).unwrap_or(Some(T::Void))?;
     Some((parameters, result))
 }
+
+/// Carrier for service-backed early calls (`HostObjectServices::invoke_early`),
+/// which pass Variant arguments and can handle any Automation scalar type.
+pub fn service_carrier(ty: P) -> Option<T> {
+    carrier(ty).or(match ty {
+        P::Byte
+        | P::ByRefByte
+        | P::Integer
+        | P::ByRefInteger
+        | P::LongLong
+        | P::ByRefLongLong
+        | P::LongPtr
+        | P::ByRefLongPtr
+        | P::Single
+        | P::ByRefSingle
+        | P::Currency
+        | P::ByRefCurrency
+        | P::Date
+        | P::ByRefDate
+        | P::Decimal
+        | P::ByRefDecimal => Some(T::Variant),
+        _ => None,
+    })
+}
+
+fn service_wire_supported(ty: P, wire: &W, result: bool) -> bool {
+    match wire {
+        W::Automation(w) => *w == ty && service_carrier(ty).is_some(),
+        _ => wire_supported(ty, wire, result),
+    }
+}
+
+pub fn service_validate(member: &TypeLibMemberMetadata) -> bool {
+    let count = member.parameter_types.len();
+    member.callconv_is_stdcall
+        && member.interface_iid.is_some_and(|iid| !iid.is_null())
+        && (is_dispatch(member)
+            || (member.is_dual
+                && member.source_typekind == Some(SourceTypeKind::Interface)
+                && member
+                    .vtable_slot
+                    .zip(member.vtable_slot_bound)
+                    .is_some_and(|(slot, bound)| slot >= 7 && slot < bound && bound <= 4096)))
+        && count <= MAX_NATIVE_PARAMETERS
+        && member.parameter_wire_types.len() == count
+        && member.parameter_optional.len() == count
+        && member.parameter_optional_defaults.len() == count
+        && member
+            .parameter_types
+            .iter()
+            .zip(&member.parameter_wire_types)
+            .enumerate()
+            .all(|(i, (&ty, wire))| {
+                service_wire_supported(ty, wire, false)
+                    && (member.parameter_optional_defaults[i] != D::Lcid || ty == P::Long)
+            })
+        && match (member.return_type, &member.return_wire_type) {
+            (None, None) => true,
+            (Some(ty), Some(wire)) => !ty.is_by_ref() && service_wire_supported(ty, wire, true),
+            _ => false,
+        }
+}
+
+/// Map each supplied argument position of a service-backed early call to its
+/// declared index in `member.parameter_types`. For `PropertyPut`/`PropertyPutRef`,
+/// the last supplied argument binds to the trailing value parameter (`RHS`), and
+/// omitted index parameters before it must be optional or carry defaults.
+pub fn service_param_indices(
+    member: &TypeLibMemberMetadata,
+    supplied: usize,
+    has_named: bool,
+) -> Option<Vec<usize>> {
+    if !service_validate(member) || supplied > MAX_NATIVE_PARAMETERS {
+        return None;
+    }
+    let indices = visible_indices(member);
+    if supplied > indices.len() {
+        return None;
+    }
+    let is_put = matches!(
+        member.invoke_kind,
+        crate::TypeLibMemberInvokeKind::PropertyPut
+            | crate::TypeLibMemberInvokeKind::PropertyPutRef
+    );
+    if is_put && !indices.is_empty() {
+        if supplied == 0 {
+            return None;
+        }
+        let index_count = supplied - 1;
+        let rhs_slot = indices.len() - 1;
+        if !has_named
+            && indices[index_count..rhs_slot]
+                .iter()
+                .any(|&i| !member.parameter_optional[i] && default_value(member, i).is_none())
+        {
+            return None;
+        }
+        let mut mapped = Vec::with_capacity(supplied);
+        mapped.extend_from_slice(&indices[..index_count]);
+        mapped.push(indices[rhs_slot]);
+        return Some(mapped);
+    }
+    if !has_named
+        && indices[supplied..]
+            .iter()
+            .any(|&i| !member.parameter_optional[i] && default_value(member, i).is_none())
+    {
+        return None;
+    }
+    Some(indices[..supplied].to_vec())
+}
+
+/// Signature admission for service-backed early calls up to `MAX_NATIVE_PARAMETERS`.
+pub fn service_signature(member: &TypeLibMemberMetadata, supplied: usize) -> Option<(Vec<T>, T)> {
+    service_signature_args(member, supplied, false)
+}
+
+/// Signature admission for service-backed early calls, optionally with named arguments
+/// whose required-parameter completeness was already checked by the binder.
+pub fn service_signature_args(
+    member: &TypeLibMemberMetadata,
+    supplied: usize,
+    has_named: bool,
+) -> Option<(Vec<T>, T)> {
+    let mapped = service_param_indices(member, supplied, has_named)?;
+    let parameters = mapped
+        .iter()
+        .map(|&i| service_carrier(member.parameter_types[i]))
+        .collect::<Option<Vec<_>>>()?;
+    let result = member
+        .return_type
+        .map(service_carrier)
+        .unwrap_or(Some(T::Void))?;
+    Some((parameters, result))
+}

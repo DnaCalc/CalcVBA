@@ -791,16 +791,18 @@ fn request_from(reference: &ProjectReference) -> Option<calcvba_com::TypeLibReso
     }
 }
 
-fn resolve_typelib_provider_closure(
+fn resolve_typelib_provider_closures(
     typelibs: &dyn TypeLibResolver,
-    request: calcvba_com::TypeLibResolveRequest,
+    requests: Vec<calcvba_com::TypeLibResolveRequest>,
+    library_requests: &HashMap<String, calcvba_com::TypeLibResolveRequest>,
     used_type_names: &HashSet<String>,
 ) -> Vec<ComTypeLibProvider> {
     // VBA sees a referenced typelib's returned interfaces as part of the same
-    // referenced library. Follow named object-return descriptors so a chain like
-    // `Application.Workbooks.Count` does not need a second synthetic reference.
+    // referenced library, or of another referenced type library when qualified
+    // (`OtherLib.Iface`). Follow named object-return descriptors across the
+    // project's referenced type libraries so chains like `a.B.C` bind early.
     let mut blobs = Vec::new();
-    let mut queue = VecDeque::from([request]);
+    let mut queue = VecDeque::from(requests);
     let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
 
     while let Some(request) = queue.pop_front() {
@@ -825,13 +827,14 @@ fn resolve_typelib_provider_closure(
         let major_version_hint = request.major_version_hint;
         let minor_version_hint = request.minor_version_hint;
         let lcid_hint = request.lcid_hint;
-        let mut followups = Vec::new();
-        let mut followup_seen = HashSet::new();
+        let mut followups: Vec<(String, String)> = Vec::new();
+        let mut followup_seen: HashSet<(String, String)> = HashSet::new();
         if request.requested_coclass.is_some() {
             for interface_name in returned_interface_names(&blob) {
                 push_typelib_followup(
                     &reference_name,
                     interface_name,
+                    library_requests,
                     &mut followups,
                     &mut followup_seen,
                 );
@@ -844,6 +847,7 @@ fn resolve_typelib_provider_closure(
                 push_typelib_followup(
                     &reference_name,
                     app_object.coclass.clone(),
+                    library_requests,
                     &mut followups,
                     &mut followup_seen,
                 );
@@ -853,6 +857,7 @@ fn resolve_typelib_provider_closure(
             push_typelib_followup(
                 &reference_name,
                 coclass_name,
+                library_requests,
                 &mut followups,
                 &mut followup_seen,
             );
@@ -873,20 +878,28 @@ fn resolve_typelib_provider_closure(
             push_typelib_followup(
                 &reference_name,
                 interface,
+                library_requests,
                 &mut followups,
                 &mut followup_seen,
             );
         }
-        for interface_name in followups {
-            queue.push_back(calcvba_com::TypeLibResolveRequest {
-                reference_name: reference_name.clone(),
-                requested_coclass: Some(interface_name),
-                importlib_hint: importlib_hint.clone(),
-                libid_hint: libid_hint.clone(),
-                major_version_hint,
-                minor_version_hint,
-                lcid_hint,
-            });
+        for (target_lib, interface_name) in followups {
+            if target_lib.eq_ignore_ascii_case(&reference_name) {
+                queue.push_back(calcvba_com::TypeLibResolveRequest {
+                    reference_name: reference_name.clone(),
+                    requested_coclass: Some(interface_name),
+                    importlib_hint: importlib_hint.clone(),
+                    libid_hint: libid_hint.clone(),
+                    major_version_hint,
+                    minor_version_hint,
+                    lcid_hint,
+                });
+            } else if let Some(base) = library_requests.get(&fold_identifier(&target_lib)) {
+                queue.push_back(calcvba_com::TypeLibResolveRequest {
+                    requested_coclass: Some(interface_name),
+                    ..base.clone()
+                });
+            }
         }
 
         let iid = typelibs.interface_iid(&request, &blob);
@@ -899,37 +912,49 @@ fn resolve_typelib_provider_closure(
 fn push_typelib_followup(
     reference_name: &str,
     name: String,
-    followups: &mut Vec<String>,
-    seen: &mut HashSet<String>,
+    library_requests: &HashMap<String, calcvba_com::TypeLibResolveRequest>,
+    followups: &mut Vec<(String, String)>,
+    seen: &mut HashSet<(String, String)>,
 ) {
-    let Some(normalized) = normalize_typelib_followup_name(reference_name, &name) else {
+    let Some((target_lib, normalized)) =
+        normalize_typelib_followup_target(reference_name, &name, library_requests)
+    else {
         return;
     };
-    let folded = fold_identifier(&normalized);
-    if matches!(folded.as_str(), "idispatch" | "iunknown") {
+    let folded_name = fold_identifier(&normalized);
+    if matches!(folded_name.as_str(), "idispatch" | "iunknown") {
         return;
     }
-    if seen.insert(folded) {
-        followups.push(normalized);
+    let key = (fold_identifier(&target_lib), folded_name);
+    if seen.insert(key) {
+        followups.push((target_lib, normalized));
     }
 }
 
-fn normalize_typelib_followup_name(reference_name: &str, name: &str) -> Option<String> {
+fn normalize_typelib_followup_target(
+    reference_name: &str,
+    name: &str,
+    library_requests: &HashMap<String, calcvba_com::TypeLibResolveRequest>,
+) -> Option<(String, String)> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return None;
     }
     if let Some((prefix, suffix)) = trimmed.split_once('.') {
-        if !prefix.eq_ignore_ascii_case(reference_name) {
-            return None;
-        }
+        let prefix = prefix.trim();
         let suffix = suffix.trim();
         if suffix.is_empty() {
             return None;
         }
-        return Some(suffix.to_string());
+        if prefix.eq_ignore_ascii_case(reference_name) {
+            return Some((reference_name.to_string(), suffix.to_string()));
+        }
+        if let Some(target) = library_requests.get(&fold_identifier(prefix)) {
+            return Some((target.reference_name.clone(), suffix.to_string()));
+        }
+        return None;
     }
-    Some(trimmed.to_string())
+    Some((reference_name.to_string(), trimmed.to_string()))
 }
 
 fn returned_interface_names(blob: &calcvba_com::TypeLibMetadataBlob) -> Vec<String> {
@@ -1807,15 +1832,15 @@ pub fn build_resolution_environment_with_project_surfaces(
     let project_provider =
         ProjectProvider::build(&manifest.project_name, &symbols, &active_scans, &[]);
 
-    let mut com_providers: Vec<ComTypeLibProvider> = Vec::new();
-    let mut host_blobs: Vec<ComTypeLibProvider> = Vec::new();
+    let mut library_requests: HashMap<String, calcvba_com::TypeLibResolveRequest> = HashMap::new();
+    let mut type_library_roots = Vec::new();
+    let mut host_roots = Vec::new();
     for reference in &manifest.references {
         if let Some(request) = request_from(reference) {
-            com_providers.extend(resolve_typelib_provider_closure(
-                typelibs,
-                request,
-                &used_type_names,
-            ));
+            library_requests
+                .entry(fold_identifier(&request.reference_name))
+                .or_insert_with(|| request.clone());
+            type_library_roots.push(request);
         }
         if let ProjectReference::HostInjected {
             referenced_project_name,
@@ -1827,7 +1852,7 @@ pub fn build_resolution_environment_with_project_surfaces(
                 .rsplit_once('.')
                 .map(|(library, coclass)| (library.to_string(), Some(coclass.to_string())))
                 .unwrap_or_else(|| (referenced_project_name.clone(), None));
-            let request = calcvba_com::TypeLibResolveRequest {
+            host_roots.push(calcvba_com::TypeLibResolveRequest {
                 reference_name,
                 requested_coclass,
                 importlib_hint: None,
@@ -1835,14 +1860,21 @@ pub fn build_resolution_environment_with_project_surfaces(
                 major_version_hint: None,
                 minor_version_hint: None,
                 lcid_hint: None,
-            };
-            host_blobs.extend(resolve_typelib_provider_closure(
-                typelibs,
-                request,
-                &used_type_names,
-            ));
+            });
         }
     }
+    let com_providers = resolve_typelib_provider_closures(
+        typelibs,
+        type_library_roots,
+        &library_requests,
+        &used_type_names,
+    );
+    let host_blobs = resolve_typelib_provider_closures(
+        typelibs,
+        host_roots,
+        &library_requests,
+        &used_type_names,
+    );
 
     // Chain order: active project → referenced-project surfaces → VBA library →
     // host → COM typelibs. Active names shadow referenced ones (active-wins on a

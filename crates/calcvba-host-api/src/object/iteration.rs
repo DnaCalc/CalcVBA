@@ -21,6 +21,17 @@ pub struct DynamicMemberCall {
     pub arguments: Vec<DynamicArgument>,
 }
 
+/// One compiler-planned early-bound member call routed to host services when
+/// the object supplies no per-slot table entry for that member.
+pub struct EarlyMemberCall<'a> {
+    pub interface: InterfaceId,
+    pub member_id: i32,
+    pub vtable_slot: Option<u16>,
+    pub name: &'a str,
+    pub kind: DynamicMemberKind,
+    pub arguments: &'a [DynamicArgument],
+}
+
 /// One retained, live iterator. Each advance completes synchronously; its owner
 /// survives instruction-boundary suspension and is released on exhaustion/drop.
 pub struct HostEnumerator {
@@ -53,6 +64,20 @@ pub trait HostObjectServices {
     fn invoke_dynamic(
         &self,
         _call: &DynamicMemberCall,
+        _arguments: &mut [calcvba_runtime::Variant],
+        _context: &mut TypedContext,
+    ) -> Result<calcvba_runtime::Variant, crate::TypedFault> {
+        Err(crate::TypedFault {
+            number: 438,
+            description: calcvba_runtime::default_error_message(438).into(),
+            source: None,
+            help_file: None,
+            help_context: None,
+        })
+    }
+    fn invoke_early(
+        &self,
+        _call: &EarlyMemberCall<'_>,
         _arguments: &mut [calcvba_runtime::Variant],
         _context: &mut TypedContext,
     ) -> Result<calcvba_runtime::Variant, crate::TypedFault> {

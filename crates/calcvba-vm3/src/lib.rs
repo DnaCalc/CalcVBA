@@ -3481,9 +3481,11 @@ impl<'h> Vm3<'h> {
             | NativeImplId::LTrim
             | NativeImplId::RTrim
             | NativeImplId::Asc
-                if call.args.len() == 1
-                    && let FastArg::ByVal(arg_op) = call.args[0] =>
+                if matches!(call.args.as_slice(), [FastArg::ByVal(_)]) =>
             {
+                let FastArg::ByVal(arg_op) = call.args[0] else {
+                    unreachable!();
+                };
                 match call.id {
                     NativeImplId::Sqr => {
                         if let Some(x) = self

@@ -709,12 +709,29 @@ impl ScalarLayout {
                 let native = descriptor.callconv_is_stdcall
                     || descriptor.is_dual
                     || descriptor.source_typekind.is_some();
+                let has_named = args
+                    .iter()
+                    .any(|arg| matches!(arg, calcvba_oxir::OxCallArg::Named { .. }));
                 let native_signature = if native {
                     if !owning {
                         return Err("native typed COM requires an owning activation".into());
                     }
                     Some(
-                        calcvba_com::typed_slots::plan::visible_signature(descriptor, args.len())
+                        (!has_named)
+                            .then(|| {
+                                calcvba_com::typed_slots::plan::visible_signature(
+                                    descriptor,
+                                    args.len(),
+                                )
+                            })
+                            .flatten()
+                            .or_else(|| {
+                                calcvba_com::typed_slots::plan::service_signature_args(
+                                    descriptor,
+                                    args.len(),
+                                    has_named,
+                                )
+                            })
                             .ok_or("unsupported native typed COM signature")?,
                     )
                 } else {
@@ -759,7 +776,7 @@ impl ScalarLayout {
                     }
                 };
                 if descriptor.invoke_kind != *invoke_kind
-                    || parameters.len() > MAX_TYPED_ARGS
+                    || (!native && parameters.len() > MAX_TYPED_ARGS)
                     || (!native && descriptor.parameter_optional.iter().any(|p| *p))
                     || (!native
                         && descriptor
@@ -780,17 +797,29 @@ impl ScalarLayout {
                     {
                         None
                     }
-                    Some(TypeLibWireType::InterfacePointer { name }) => Some(
-                        interfaces
+                    Some(TypeLibWireType::InterfacePointer { name }) => {
+                        let bare = name.rsplit('.').next().unwrap_or(name);
+                        let matched = interfaces
                             .iter()
                             .find(|i| i.name().eq_ignore_ascii_case(name))
-                            .and_then(|i| match i {
-                                calcvba_oxir::ComInterface::Com(meta) => meta.iid,
-                                _ => None,
-                            })
-                            .map(iid_bytes)
-                            .ok_or("host result has no retained nominal interface")?,
-                    ),
+                            .or_else(|| {
+                                interfaces.iter().find(|i| {
+                                    i.name()
+                                        .rsplit('.')
+                                        .next()
+                                        .is_some_and(|n| n.eq_ignore_ascii_case(bare))
+                                })
+                            });
+                        Some(
+                            matched
+                                .and_then(|i| match i {
+                                    calcvba_oxir::ComInterface::Com(meta) => meta.iid,
+                                    _ => None,
+                                })
+                                .map(iid_bytes)
+                                .ok_or("host result has no retained nominal interface")?,
+                        )
+                    }
                     Some(TypeLibWireType::Automation(p)) if Some(*p) != descriptor.return_type => {
                         return Err("typed host result wire mismatch".into());
                     }
@@ -820,9 +849,7 @@ impl ScalarLayout {
                 )
                 .ok_or("typed host table index is missing or exceeds declared table")?;
                 let plan = HostCallPlan {
-                    native: (native
-                        && calcvba_com::typed_slots::scalar_signature(descriptor).is_none())
-                    .then(|| descriptor.clone()),
+                    native: native.then(|| descriptor.clone()),
                     iid: bytes,
                     slot,
                     long_argument: parameters == [ScalarType::Long] && result == ScalarType::Double,
@@ -852,7 +879,11 @@ impl ScalarLayout {
                         || member.is_dual
                         || member.source_typekind.is_some();
                     let native_signature = native
-                        .then(|| calcvba_com::typed_slots::plan::visible_signature(member, 0))
+                        .then(|| {
+                            calcvba_com::typed_slots::plan::visible_signature(member, 0).or_else(
+                                || calcvba_com::typed_slots::plan::service_signature(member, 0),
+                            )
+                        })
                         .flatten();
                     if (!native && !member.parameter_types.is_empty())
                         || (native && native_signature.is_none())
@@ -894,9 +925,7 @@ impl ScalarLayout {
                         continue;
                     };
                     let plan = HostCallPlan {
-                        native: (native
-                            && calcvba_com::typed_slots::scalar_signature(member).is_none())
-                        .then(|| member.clone()),
+                        native: native.then(|| member.clone()),
                         iid,
                         slot,
                         long_argument: false,
@@ -2408,9 +2437,33 @@ impl ScalarLayout {
                 ..
             } => {
                 let plan = self.host_calls.get(method).ok_or("unplanned host slot")?;
-                let arity = if let Some(native) = &plan.native {
-                    calcvba_com::typed_slots::plan::visible_signature(native, args.len()).is_some()
-                        && args.len() <= plan.parameters.len()
+                let has_named = args
+                    .iter()
+                    .any(|arg| matches!(arg, calcvba_oxir::OxCallArg::Named { .. }));
+                let native_params = if let Some(native) = &plan.native {
+                    (!has_named)
+                        .then(|| {
+                            calcvba_com::typed_slots::plan::visible_signature(native, args.len())
+                        })
+                        .flatten()
+                        .or_else(|| {
+                            calcvba_com::typed_slots::plan::service_signature_args(
+                                native,
+                                args.len(),
+                                has_named,
+                            )
+                        })
+                        .map(|(parameters, _)| parameters)
+                } else {
+                    None
+                };
+                let expected_params = if let Some(params) = &native_params {
+                    params.as_slice()
+                } else {
+                    plan.parameters.as_slice()
+                };
+                let arity = if plan.native.is_some() {
+                    native_params.is_some()
                 } else {
                     args.len() == plan.parameters.len()
                 };
@@ -2422,20 +2475,63 @@ impl ScalarLayout {
                     None => {}
                     _ => return Err("typed host result destination mismatch".into()),
                 }
-                for (index, (arg, ty)) in args.iter().zip(&plan.parameters).enumerate() {
+                let mapped_indices = plan.native.as_ref().and_then(|member| {
+                    calcvba_com::typed_slots::plan::service_param_indices(
+                        member,
+                        args.len(),
+                        has_named,
+                    )
+                });
+                for (index, (arg, positional_ty)) in args.iter().zip(expected_params).enumerate() {
+                    let ty = match (arg, &plan.native) {
+                        (calcvba_oxir::OxCallArg::Named { name, .. }, Some(member)) => {
+                            let indices = calcvba_com::typed_slots::plan::visible_indices(member);
+                            let native_idx = indices
+                                .iter()
+                                .copied()
+                                .find(|&idx| {
+                                    member
+                                        .parameter_names
+                                        .get(idx)
+                                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                                })
+                                .ok_or("unknown named host argument")?;
+                            calcvba_com::typed_slots::plan::service_carrier(
+                                member.parameter_types[native_idx],
+                            )
+                            .ok_or("unsupported named host argument carrier")?
+                        }
+                        _ => *positional_ty,
+                    };
                     let from = match arg {
                         calcvba_oxir::OxCallArg::Operand(op) => self.operand_type(op)?,
                         calcvba_oxir::OxCallArg::ByRef(p) => self.slots[self.slot(*p)?],
+                        calcvba_oxir::OxCallArg::Named { value, by_ref, .. }
+                            if plan.native.is_some() =>
+                        {
+                            if let Some(p) = by_ref {
+                                self.slots[self.slot(*p)?]
+                            } else {
+                                self.operand_type(value)?
+                            }
+                        }
                         calcvba_oxir::OxCallArg::Const(_) => ScalarType::Long,
                         calcvba_oxir::OxCallArg::Omitted
                             if plan.native.as_ref().is_some_and(|member| {
-                                let indices =
-                                    calcvba_com::typed_slots::plan::visible_indices(member);
-                                calcvba_com::typed_slots::plan::default_value(
-                                    member,
-                                    indices[index],
-                                )
-                                .is_some()
+                                mapped_indices
+                                    .as_ref()
+                                    .and_then(|m| m.get(index).copied())
+                                    .is_some_and(|native_idx| {
+                                        member
+                                            .parameter_optional
+                                            .get(native_idx)
+                                            .copied()
+                                            .unwrap_or(false)
+                                            || calcvba_com::typed_slots::plan::default_value(
+                                                member, native_idx,
+                                            )
+                                            .is_some()
+                                    })
                             }) =>
                         {
                             ty.carrier()
@@ -2448,7 +2544,12 @@ impl ScalarLayout {
                     };
                     let boxed_native_input = plan.native.is_some()
                         && ty.carrier() == ScalarType::Variant
-                        && matches!(arg, calcvba_oxir::OxCallArg::Operand(_));
+                        && matches!(
+                            arg,
+                            calcvba_oxir::OxCallArg::Operand(_)
+                                | calcvba_oxir::OxCallArg::ByRef(_)
+                                | calcvba_oxir::OxCallArg::Named { .. }
+                        );
                     if from != ty.carrier() && !boxed_native_input {
                         return Err("typed host argument carrier mismatch".into());
                     }

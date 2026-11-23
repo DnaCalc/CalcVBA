@@ -125,6 +125,15 @@ pub(super) unsafe fn operand_value(
     layout: &ScalarLayout,
     operand: &OxOperand,
 ) -> Result<Variant, i32> {
+    match operand {
+        OxOperand::Const(OxConst::Str(text)) => return Ok(Variant::from_string(text.as_str())),
+        OxOperand::Const(OxConst::NullStr) => {
+            return Ok(Variant::null_string());
+        }
+        OxOperand::Const(OxConst::Empty) => return Ok(Variant::empty()),
+        OxOperand::Const(OxConst::Null) => return Ok(Variant::null()),
+        _ => {}
+    }
     let ty = layout.operand_type(operand).map_err(|_| 5)?;
     // SAFETY: inherited retained frame/layout contract.
     let bits = unsafe { read_operand(raw, layout, operand, ty) }?;
@@ -295,8 +304,7 @@ pub unsafe extern "C" fn evaluate(
                     .flatten()
                     && let Some(reference) = value.as_object_ref()
                 {
-                    let object =
-                        calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(13)?;
+                    let object = super::member::host_view(&reference).ok_or(13)?;
                     object.resolve_interface(iid)?;
                 }
                 Ok(())
@@ -545,7 +553,7 @@ pub fn resolve_default(
             return Ok(value);
         }
         let reference = value.as_object_ref().ok_or(91)?;
-        let object = calcvba_host_api::HostObject::from_object_ref(&reference).ok_or(13)?;
+        let object = super::member::host_view(&reference).ok_or(13)?;
         value = default_value_of(&object, layout, context)?;
     }
     if value.vtype() == VarType::Object {
@@ -575,19 +583,45 @@ pub fn default_value_of(
                 .invoke_dynamic(&call, &mut [], context)
                 .map_err(|e| e.publish(context));
         }
-        let plan = layout
-            .default_calls
-            .get(&object.header().iid)
-            .ok_or_else(|| {
-                layout
-                    .default_faults
-                    .get(&object.header().iid)
-                    .copied()
-                    .unwrap_or(438)
-            })?;
+        let Some(plan) = layout.default_calls.get(&object.header().iid) else {
+            if let Some(&fault) = layout.default_faults.get(&object.header().iid) {
+                return Err(fault);
+            }
+            if object.header().slot_count == 0 && object.has_services() {
+                let call = calcvba_host_api::object::DynamicMemberCall {
+                    name: None,
+                    kind: calcvba_host_api::object::DynamicMemberKind::Get,
+                    arguments: vec![],
+                };
+                return object
+                    .invoke_dynamic(&call, &mut [], context)
+                    .map_err(|e| e.publish(context));
+            }
+            return Err(438);
+        };
+        if object.header().slot_count == 0
+            && object.has_services()
+            && let Some(descriptor) = &plan.native
+        {
+            let call = calcvba_host_api::object::EarlyMemberCall {
+                interface: plan.iid,
+                member_id: descriptor.token,
+                vtable_slot: descriptor.vtable_slot,
+                name: &descriptor.name,
+                kind: calcvba_host_api::object::DynamicMemberKind::Get,
+                arguments: &[],
+            };
+            return object
+                .invoke_early(&call, &mut [], context)
+                .map_err(|e| e.publish(context));
+        }
         // SAFETY: the retained factory object and compiler-selected getter plan
         // supply the exact signature. The owned value survives the callback.
-        let result = if plan.native.is_some() {
+        let result = if plan
+            .native
+            .as_ref()
+            .is_some_and(|d| calcvba_com::typed_slots::scalar_signature(d).is_none())
+        {
             let mut values = [];
             let mut arguments =
                 calcvba_host_api::object::planned_slots::MemberArguments::new(&mut values, &[])?;

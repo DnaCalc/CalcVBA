@@ -200,21 +200,217 @@ pub(super) unsafe fn invoke(
     }
     // SAFETY: the retained carrier has a canonical IUnknown prefix; only a
     // factory-vtable proof permits reading the larger host slot table.
-    let Value::Object(Some(receiver)) = (unsafe {
+    let receiver = match unsafe {
         calcvba_host_api::value::retain_bits(
             ScalarType::HostObject,
             super::ScalarBits::object(header),
         )
-    })?
-    else {
-        return Err(13);
+    }? {
+        Value::Object(Some(receiver)) => receiver,
+        Value::RuntimeObject(reference) => host_view(&reference).ok_or(13)?,
+        _ => return Err(13),
     };
+    let indices = calcvba_com::typed_slots::plan::visible_indices(descriptor);
+    if receiver.header().slot_count == 0 && receiver.has_services() {
+        let target = if receiver.header().iid == plan.iid {
+            receiver
+        } else {
+            receiver.resolve_interface(plan.iid).map_err(|_| 438)?
+        };
+        let has_named = args.iter().any(|a| matches!(a, OxCallArg::Named { .. }));
+        let mapped_indices = calcvba_com::typed_slots::plan::service_param_indices(
+            descriptor,
+            args.len(),
+            has_named,
+        );
+        let mut values = Vec::with_capacity(args.len());
+        let mut specifications = Vec::with_capacity(args.len());
+        let mut targets = Vec::with_capacity(args.len());
+        let mut identities = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let mut name = None;
+            let mut target_slot = None;
+            if let OxCallArg::Named { name: n, .. } = arg {
+                name = Some(n.clone());
+            }
+            let native_index = if let Some(param_name) = name.as_deref() {
+                indices.iter().copied().find(|&idx| {
+                    descriptor
+                        .parameter_names
+                        .get(idx)
+                        .is_some_and(|n| n.eq_ignore_ascii_case(param_name))
+                })
+            } else {
+                mapped_indices
+                    .as_ref()
+                    .and_then(|m| m.get(i).copied())
+                    .or_else(|| indices.get(i).copied())
+            };
+            let by_ref_param = native_index
+                .is_some_and(|idx| calcvba_com::typed_slots::plan::is_by_ref(descriptor, idx));
+            let value = match arg {
+                OxCallArg::Operand(op)
+                | OxCallArg::Named {
+                    value: op,
+                    by_ref: None,
+                    ..
+                } => {
+                    // SAFETY: admitted actual operand retained through this call.
+                    unsafe { super::value::operand_value(raw, layout, op) }?
+                }
+                OxCallArg::ByRef(place)
+                | OxCallArg::Named {
+                    by_ref: Some(place),
+                    ..
+                } => {
+                    let index = layout.slot(*place).map_err(|_| 5)?;
+                    if by_ref_param {
+                        target_slot = Some(index);
+                    }
+                    // SAFETY: admitted lvalue and stable ancestor/global ownership.
+                    unsafe {
+                        super::value::operand_value(
+                            raw,
+                            layout,
+                            &calcvba_oxir::OxOperand::Use(*place),
+                        )
+                    }?
+                }
+                OxCallArg::Omitted => native_index
+                    .and_then(|idx| calcvba_com::typed_slots::plan::default_value(descriptor, idx))
+                    .unwrap_or_else(|| {
+                        calcvba_runtime::Variant::from_error_code(0x8002_0004u32 as i32)
+                    }),
+                OxCallArg::Const(v) => calcvba_runtime::Variant::from_i32(*v),
+            };
+            // SAFETY: exact admitted target and retained caller storage.
+            let identity = target_slot
+                .map(|index| unsafe { slot_identity(raw, index) })
+                .transpose()?;
+            let alias = identity
+                .and_then(|identity| identities.iter().position(|old| *old == Some(identity)))
+                .unwrap_or(i);
+            identities.push(identity);
+            specifications.push(calcvba_host_api::object::DynamicArgument {
+                name,
+                by_ref: target_slot.is_some(),
+                alias,
+            });
+            targets.push(target_slot);
+            values.push(value);
+        }
+        let call = calcvba_host_api::object::EarlyMemberCall {
+            interface: plan.iid,
+            member_id: descriptor.token,
+            vtable_slot: descriptor.vtable_slot,
+            name: &descriptor.name,
+            kind: match descriptor.invoke_kind {
+                calcvba_com::TypeLibMemberInvokeKind::Method => {
+                    calcvba_host_api::object::DynamicMemberKind::Method
+                }
+                calcvba_com::TypeLibMemberInvokeKind::PropertyGet => {
+                    calcvba_host_api::object::DynamicMemberKind::Get
+                }
+                calcvba_com::TypeLibMemberInvokeKind::PropertyPut => {
+                    calcvba_host_api::object::DynamicMemberKind::Let
+                }
+                calcvba_com::TypeLibMemberInvokeKind::PropertyPutRef => {
+                    calcvba_host_api::object::DynamicMemberKind::Set
+                }
+            },
+            arguments: &specifications,
+        };
+        let result = target.invoke_early(&call, &mut values, context);
+        let mut copyback_error = None;
+        for (i, target_slot) in targets.into_iter().enumerate() {
+            if call.arguments[i].alias != i {
+                continue;
+            }
+            if let Some(index) = target_slot {
+                match from_variant(layout.slots[index], values[i].clone()) {
+                    Ok(value) => {
+                        // SAFETY: checked actual destination, preserving its declared carrier.
+                        let status = unsafe { write_owned(raw, index, layout.slots[index], value) };
+                        if let Err(err) = status {
+                            copyback_error.get_or_insert(err);
+                        }
+                    }
+                    Err(err) => {
+                        copyback_error.get_or_insert(err);
+                    }
+                }
+            }
+        }
+        let mut result = result.map_err(|fault| fault.publish(context))?;
+        if let Some(error) = copyback_error {
+            return Err(error);
+        }
+        if let Some(expected_iid) = plan.result_iid
+            && let Some(reference) = result.as_object_ref()
+        {
+            let object = host_view(&reference).ok_or(13)?;
+            let view = object.resolve_interface(expected_iid)?;
+            result = calcvba_runtime::Variant::from_object_ref(view.object_ref());
+        }
+        if let Some(dst) = dst {
+            let index = layout.slot(*dst).map_err(|_| 5)?;
+            let value = from_variant(layout.slots[index], result)?;
+            // SAFETY: exact admitted destination receives one owning result.
+            unsafe { write_owned(raw, index, layout.slots[index], value) }?;
+        }
+        return Ok(());
+    }
+    if calcvba_com::typed_slots::scalar_signature(descriptor).is_some()
+        && args.len() <= calcvba_host_api::MAX_TYPED_ARGS
+    {
+        let mut slot_bits = [super::ScalarBits::ZERO; calcvba_host_api::MAX_TYPED_ARGS];
+        for (i, (arg, ty)) in args.iter().zip(&plan.parameters).enumerate() {
+            slot_bits[i] = match arg {
+                OxCallArg::Operand(op) => {
+                    // SAFETY: admitted operand retained in scratch through the slot call.
+                    unsafe { read_operand(raw, layout, op, ty.carrier()) }?
+                }
+                OxCallArg::ByRef(place) => {
+                    let index = layout.slot(*place).map_err(|_| 5)?;
+                    // SAFETY: admitted slot index with exact checked carrier.
+                    unsafe { read_slot(raw, index, ty.carrier()) }?
+                }
+                OxCallArg::Const(value) => super::ScalarBits::long(*value),
+                _ => return Err(13),
+            };
+        }
+        // SAFETY: retained factory table and checked scalar signature.
+        let value = unsafe {
+            calcvba_host_api::object::value_slots::invoke_value_slot(
+                receiver.argument().header(),
+                plan.iid,
+                plan.slot,
+                &plan.parameters[..args.len()],
+                plan.result,
+                &slot_bits[..args.len()],
+                context,
+            )
+        }?;
+        if let Some(iid) = plan.result_iid
+            && !value.has_interface(iid)
+        {
+            return Err(13);
+        }
+        if let Some(dst) = dst {
+            let index = layout.slot(*dst).map_err(|_| 5)?;
+            // SAFETY: one exact owned result transfers into the admitted destination.
+            unsafe { write_owned(raw, index, layout.slots[index], value) }?;
+        }
+        return Ok(());
+    }
+    if args.len() > calcvba_host_api::MAX_TYPED_ARGS {
+        return Err(438);
+    }
     let mut values: [Value; calcvba_host_api::MAX_TYPED_ARGS] =
         std::array::from_fn(|_| Value::Empty);
     let mut aliases = std::array::from_fn::<_, { calcvba_host_api::MAX_TYPED_ARGS }, _>(|i| i);
     let mut targets = [None; calcvba_host_api::MAX_TYPED_ARGS];
     let mut identities = [None; calcvba_host_api::MAX_TYPED_ARGS];
-    let indices = calcvba_com::typed_slots::plan::visible_indices(descriptor);
     for (i, (arg, ty)) in args.iter().zip(&plan.parameters).enumerate() {
         if let OxCallArg::Operand(operand) = arg
             && ty.carrier() == ScalarType::Variant

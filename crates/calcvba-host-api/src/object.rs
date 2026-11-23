@@ -8,7 +8,8 @@ use std::{
 };
 mod iteration;
 pub use iteration::{
-    DynamicArgument, DynamicMemberCall, DynamicMemberKind, HostEnumerator, HostObjectServices,
+    DynamicArgument, DynamicMemberCall, DynamicMemberKind, EarlyMemberCall, HostEnumerator,
+    HostObjectServices,
 };
 
 /// Canonical Automation IDispatch IID, in the same byte order as InterfaceId.
@@ -230,6 +231,9 @@ impl HostObject {
             .ok_or(438)?
             .enumerator(context)
     }
+    pub fn has_services(&self) -> bool {
+        self.storage.services.is_some()
+    }
     pub fn invoke_dynamic(
         &self,
         call: &DynamicMemberCall,
@@ -238,6 +242,23 @@ impl HostObject {
     ) -> Result<calcvba_runtime::Variant, crate::TypedFault> {
         match &self.storage.services {
             Some(services) => services.invoke_dynamic(call, arguments, context),
+            None => Err(crate::TypedFault {
+                number: 438,
+                description: calcvba_runtime::default_error_message(438).into(),
+                source: None,
+                help_file: None,
+                help_context: None,
+            }),
+        }
+    }
+    pub fn invoke_early(
+        &self,
+        call: &EarlyMemberCall<'_>,
+        arguments: &mut [calcvba_runtime::Variant],
+        context: &mut TypedContext,
+    ) -> Result<calcvba_runtime::Variant, crate::TypedFault> {
+        match &self.storage.services {
+            Some(services) => services.invoke_early(call, arguments, context),
             None => Err(crate::TypedFault {
                 number: 438,
                 description: calcvba_runtime::default_error_message(438).into(),

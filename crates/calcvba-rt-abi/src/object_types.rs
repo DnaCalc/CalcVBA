@@ -28,11 +28,22 @@ pub fn matches_type(
                             && implemented.eq_ignore_ascii_case(bare)
                 }));
         }
-        return Ok(descriptor.name.eq_ignore_ascii_case(bare)
+        if descriptor.name.eq_ignore_ascii_case(bare)
             || descriptor
                 .implements
                 .iter()
-                .any(|name| name.eq_ignore_ascii_case(bare)));
+                .any(|name| name.eq_ignore_ascii_case(bare))
+        {
+            return Ok(true);
+        }
+        if let Some(native) = object.project_field_get(calcvba_bundle::HOST_DOCUMENT_FIELD)
+            && let Some(native_ref) = native.as_object_ref()
+            && let Some(prepared) = calcvba_host_api::HostObject::from_object_ref(&native_ref)
+            && let Some(iid) = iid
+        {
+            return Ok(prepared.resolve_interface(iid).is_ok());
+        }
+        return Ok(false);
     }
     if let Some(prepared) = calcvba_host_api::HostObject::from_object_ref(object)
         && let Some(iid) = iid

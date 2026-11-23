@@ -1,6 +1,6 @@
 //! Live For Each operations over host-owned enumerators, shared by VM3/JIT.
 use super::{ScalarLayout, ScalarType as T, activation::*, value::*};
-use calcvba_host_api::{HostObject, TypedContext, Value};
+use calcvba_host_api::{TypedContext, Value};
 use calcvba_oxir::OxInst;
 
 pub(super) fn is_iteration(inst: &OxInst) -> bool {
@@ -20,7 +20,7 @@ pub(super) fn admit(layout: &ScalarLayout, inst: &OxInst) -> Result<bool, String
     match inst {
         OxInst::ForEachInit { iter, source } => {
             variant(*iter)?;
-            if layout.operand_type(source)? != T::HostObject {
+            if !matches!(layout.operand_type(source)?, T::HostObject | T::Variant) {
                 return Err("typed host enumeration requires an object carrier".into());
             }
         }
@@ -56,7 +56,7 @@ pub(super) unsafe fn evaluate(
             // SAFETY: read retains the actual source in frame-owned scratch.
             let value = unsafe { operand_value(raw, layout, source) }?;
             let reference = value.as_object_ref().ok_or(424)?;
-            let object = HostObject::from_object_ref(&reference).ok_or(438)?;
+            let object = super::member::host_view(&reference).ok_or(438)?;
             let index = layout.slot(*iter).map_err(|_| 5)?;
             // SAFETY: detach any previous iteration before starting a new one.
             drop(unsafe { (*raw).iterators.remove(&index) });

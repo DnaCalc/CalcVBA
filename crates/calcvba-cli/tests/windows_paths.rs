@@ -101,6 +101,46 @@ End Sub
     }
 }
 
+#[test]
+fn mapped_name_preserves_the_requested_case() {
+    let root = std::env::temp_dir().join(format!("calcvba-case-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let entry = root.join("entry.bas");
+    fs::write(
+        &entry,
+        r#"
+Sub Main()
+    Open "C:\Notes.txt" For Output As #1
+    Print #1, "notes"
+    Close #1
+    SetAttr "C:\Notes.txt", vbHidden + vbSystem + vbArchive
+    Name "c:\NOTES.txt" As "C:\notes.TXT"
+    Debug.Print Dir$("C:\*.txt", vbHidden + vbSystem), GetAttr("C:\NOTES.txt")
+    SetAttr "C:\notes.TXT", vbNormal
+    Open "C:\other.bin" For Output As #1
+    Close #1
+    On Error Resume Next
+    Name "C:\notes.TXT" As "C:\OTHER.BIN"
+    Debug.Print Err.Number
+    On Error GoTo 0
+    Kill "C:\other.bin"
+    Kill "C:\notes.TXT"
+End Sub
+"#,
+    )
+    .unwrap();
+    let runs = ["vm3", "jit"].map(|backend| run_mapped_path_probe(&entry, backend));
+    fs::remove_dir_all(root).unwrap();
+    for output in runs {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(
+            stderr.split_whitespace().collect::<Vec<_>>(),
+            ["notes.TXT", "38", "58"]
+        );
+    }
+}
+
 fn run_mapped_path_probe(path: &std::path::Path, backend: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
         .args([

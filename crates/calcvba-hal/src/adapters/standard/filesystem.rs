@@ -2320,7 +2320,38 @@ impl FileSystemHal for StandardHostServices {
         // deterministic lane has no host file to move (a documented no-op).
         if self.native_fs_enabled() {
             let old = self.variant_to_path(&old_path, capability, "name", "old")?;
-            let new = self.variant_to_path(&new_path, capability, "name", "new")?;
+            let mut new = self.variant_to_path(&new_path, capability, "name", "new")?;
+            if self.uses_windows_paths() && fs::symlink_metadata(&new).is_ok() {
+                // The mapped lookup resolves both spellings to the same entry.
+                // Keep the requested basename for the actual case-only rename.
+                let spelling = new_path.as_bstr().and_then(|text| {
+                    text.as_str()
+                        .trim_end_matches(['/', '\\'])
+                        .rsplit(['/', '\\', ':'])
+                        .next()
+                        .map(str::to_owned)
+                });
+                let case_only = spelling.filter(|requested| {
+                    old == new
+                        && new
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|existing| {
+                                existing != requested
+                                    && existing.to_lowercase() == requested.to_lowercase()
+                            })
+                });
+                let Some(case_only) = case_only else {
+                    return Err(HalError::adapter_fault(
+                        self.profile,
+                        capability,
+                        "name",
+                        format!("destination {} already exists", new.display()),
+                    )
+                    .with_host_error_code(58));
+                };
+                new.set_file_name(case_only);
+            }
             fs::rename(&old, &new).map_err(|err| {
                 let fault = HalError::adapter_fault(
                     self.profile,

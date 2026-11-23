@@ -57,9 +57,34 @@ impl Provider {
         self.resolver = resolver;
         self
     }
-    /// Prepare compiler-owned metadata without publishing any callable address.
-    pub fn compile_graph(&self, graph: &api::ProjectGraph) -> Result<Module, api::Error> {
-        let _policy = self.host.enter_com_policy();
+
+    /// Inspect a single source project against the portability matrix without compiling
+    /// or loading native type libraries.
+    pub fn check_portability(
+        &self,
+        project: &api::Project,
+        host: crate::portability::Host,
+    ) -> Result<crate::portability::Report, api::Error> {
+        let (manifest, _) = self.build_project_manifest(project, true)?;
+        crate::portability::check_project(&[manifest], host).map_err(api::Error::Compile)
+    }
+
+    /// Inspect an ordered project graph against the portability matrix without compiling
+    /// or loading native type libraries.
+    pub fn check_graph_portability(
+        &self,
+        graph: &api::ProjectGraph,
+        host: crate::portability::Host,
+    ) -> Result<crate::portability::Report, api::Error> {
+        let manifests = self.build_graph_manifests(graph, true)?;
+        crate::portability::check_project(&manifests, host).map_err(api::Error::Compile)
+    }
+
+    fn build_graph_manifests(
+        &self,
+        graph: &api::ProjectGraph,
+        host_injected_libraries: bool,
+    ) -> Result<Vec<sym::SymbolProjectManifest>, api::Error> {
         if !self.class_modules.is_empty() || !self.document_modules.is_empty() {
             return Err(api::Error::UnsupportedSignature(
                 "class module selection currently requires a single project".into(),
@@ -84,6 +109,9 @@ impl Provider {
                     }
                     sym::ProjectReference::Project {
                         referenced_project_name,
+                    }
+                    | sym::ProjectReference::HostInjected {
+                        referenced_project_name,
                     } => referenced_project_name.eq_ignore_ascii_case(&library.name),
                     _ => false,
                 }) {
@@ -91,18 +119,29 @@ impl Provider {
                         "duplicate graph library reference".into(),
                     ));
                 }
-                manifest
-                    .references
-                    .push(sym::ProjectReference::TypeLibrary {
+                manifest.references.push(if host_injected_libraries {
+                    sym::ProjectReference::HostInjected {
+                        referenced_project_name: library.name.clone(),
+                    }
+                } else {
+                    sym::ProjectReference::TypeLibrary {
                         name: library.name.clone(),
                         guid: None,
                         version_major: Some(1),
                         version_minor: Some(0),
                         lcid: None,
                         import_lib: None,
-                    });
+                    }
+                });
             }
         }
+        Ok(manifests)
+    }
+
+    /// Prepare compiler-owned metadata without publishing any callable address.
+    pub fn compile_graph(&self, graph: &api::ProjectGraph) -> Result<Module, api::Error> {
+        let _policy = self.host.enter_com_policy();
+        let manifests = self.build_graph_manifests(graph, false)?;
         let resolver = Libraries(
             &self.object_libraries,
             &*self.resolver,
@@ -121,8 +160,12 @@ impl Provider {
         }
         Ok(module.with_host(self.host.clone()))
     }
-    pub fn compile(&self, project: &api::Project) -> Result<Module, api::Error> {
-        let _policy = self.host.enter_com_policy();
+
+    fn build_project_manifest(
+        &self,
+        project: &api::Project,
+        host_injected_libraries: bool,
+    ) -> Result<(sym::SymbolProjectManifest, Vec<api::TypedObjectLibrary>), api::Error> {
         let mut classes = std::collections::HashSet::new();
         for name in &self.class_modules {
             if !classes.insert(name.to_ascii_lowercase())
@@ -211,23 +254,33 @@ impl Provider {
                     lcid: r.lcid,
                     import_lib: r.import_library.clone(),
                 })
-                .chain(
-                    libraries
-                        .iter()
-                        .map(|l| sym::ProjectReference::TypeLibrary {
+                .chain(libraries.iter().map(|l| {
+                    if host_injected_libraries {
+                        sym::ProjectReference::HostInjected {
+                            referenced_project_name: l.name.clone(),
+                        }
+                    } else {
+                        sym::ProjectReference::TypeLibrary {
                             name: l.name.clone(),
                             guid: None,
                             version_major: Some(1),
                             version_minor: Some(0),
                             lcid: None,
                             import_lib: None,
-                        }),
-                )
+                        }
+                    }
+                }))
                 .collect(),
             reference_projects: vec![],
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
+        Ok((manifest, libraries))
+    }
+
+    pub fn compile(&self, project: &api::Project) -> Result<Module, api::Error> {
+        let _policy = self.host.enter_com_policy();
+        let (manifest, libraries) = self.build_project_manifest(project, false)?;
         let resolver = Libraries(
             &libraries,
             &*self.resolver,

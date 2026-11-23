@@ -9,7 +9,7 @@ use calcvba_com::platform::portable::BuiltinProgId;
 use calcvba_syntax::lexer::tokenize;
 use calcvba_syntax::{SyntaxKind as K, SyntaxNode, SyntaxToken, parse};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -287,18 +287,27 @@ fn check_project_inner(
             })
             .collect::<Result<Vec<_>, String>>()?;
 
-        let mut procedures = HashSet::new();
+        let mut project_names = HashSet::new();
+        let mut project_consts = HashMap::new();
         for (module, tree) in &prepared {
-            if module.module_kind == ModuleKind::Procedural {
-                for node in tree.syntax().child_nodes() {
-                    if let Some(name) = procedure_name(node)
-                        && !node.child_tokens().iter().any(|t| t.kind == K::KwPrivate)
-                    {
-                        procedures.insert(crate::model::fold_identifier(name.text));
-                    }
-                }
+            project_names.insert(crate::model::fold_identifier(&module.module_name));
+            if !module.attributes.vb_name.is_empty() {
+                project_names.insert(crate::model::fold_identifier(&module.attributes.vb_name));
             }
+            collect_public_exports(
+                module,
+                tree.syntax(),
+                false,
+                &mut project_names,
+                &mut project_consts,
+            );
         }
+        collect_referenced_project_exports(
+            project,
+            projects,
+            &mut project_names,
+            &mut project_consts,
+        )?;
 
         for (module, tree) in &prepared {
             let mut scanner = Scanner::new(&mut report, project, Some(module), browser);
@@ -314,12 +323,14 @@ fn check_project_inner(
             if module.module_kind == ModuleKind::Form {
                 scanner.matrix("VBEGlobal", "UserForms", None, None);
             }
-            let mut names = procedures.clone();
+            let mut names = project_names.clone();
+            let mut consts = project_consts.clone();
             for node in tree.syntax().child_nodes() {
                 collect_declarations(node, &mut names);
+                collect_string_consts(node, &mut consts);
             }
             scanner.scan_directives(&module.source);
-            scanner.walk(tree.syntax(), None, &names);
+            scanner.walk(tree.syntax(), None, &names, &consts);
         }
 
         let mut scanner = Scanner::new(&mut report, project, None, browser);
@@ -336,14 +347,28 @@ fn check_project_inner(
                     {
                         (FeatureClass::Pure, Support::Native)
                     } else if [
-                        "00020813-0000-0000-c000-000000000046", // Excel
-                        "00020430-0000-0000-c000-000000000046", // OLE Automation
-                        "2df8d04c-5bfa-101b-bde5-00aa0044de52", // Office
+                        "00020813-0000-0000-c000-000000000046",
+                        "00020430-0000-0000-c000-000000000046",
+                        "2df8d04c-5bfa-101b-bde5-00aa0044de52",
                     ]
                     .iter()
                     .any(|id| normalized_guid.eq_ignore_ascii_case(id))
                     {
                         (FeatureClass::Host, Support::Host)
+                    } else if normalized_guid
+                        .eq_ignore_ascii_case("420b2830-e718-11cf-893d-00a0c9054228")
+                    {
+                        let support = if scanner.report.host == Host::Windows {
+                            Support::Native
+                        } else if scripting_reference_uses_only_dictionary(
+                            &prepared,
+                            &project_names,
+                        ) {
+                            Support::Replace
+                        } else {
+                            Support::Reject
+                        };
+                        (FeatureClass::Windows, support)
                     } else {
                         (FeatureClass::Windows, scanner.windows_native())
                     };
@@ -593,6 +618,7 @@ impl<'a> Scanner<'a> {
         node: SyntaxNode<'_>,
         parent: Option<SyntaxNode<'_>>,
         names: &HashSet<String>,
+        consts: &HashMap<String, String>,
     ) {
         let offset = node.first_token().map(|t| t.offset);
         let statement = match node.kind() {
@@ -600,6 +626,15 @@ impl<'a> Scanner<'a> {
             K::CloseStmt => Some(("Open / Close / Get / Put", "Close")),
             K::GetStmt => Some(("Open / Close / Get / Put", "Get")),
             K::PutStmt => Some(("Open / Close / Get / Put", "Put")),
+            K::LockStmt => {
+                let is_unlock = node
+                    .first_significant_token()
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("unlock"));
+                Some((
+                    "Open / Close / Get / Put",
+                    if is_unlock { "Unlock" } else { "Lock" },
+                ))
+            }
             K::PrintStmt => Some(("Print # / Write # / Line Input #", "Print #")),
             K::WriteStmt => Some(("Print # / Write # / Line Input #", "Write #")),
             K::LineInputStmt => Some(("Print # / Write # / Line Input #", "Line Input #")),
@@ -670,31 +705,38 @@ impl<'a> Scanner<'a> {
                     );
                 }
             }
-            K::IdentExpr | K::MemberExpr => self.library_use(node, parent, names),
+            K::IdentExpr | K::MemberExpr => self.library_use(node, parent, names, consts),
+            K::ErrorStmt => self.matrix("Conversion", "Error/$", offset, Some("Error")),
             K::InputStmt => self.matrix("_HiddenModule", "Input/$", offset, Some("Input #")),
             K::SeekStmt => self.matrix("FileSystem", "Seek", offset, None),
             K::WidthStmt => self.matrix("_HiddenModule", "Width", offset, None),
             _ => {}
         }
 
-        let scoped;
-        let names = if matches!(node.kind(), K::SubDecl | K::FunctionDecl | K::PropertyDecl) {
-            scoped = {
-                let mut local = names.clone();
+        let scoped_names;
+        let scoped_consts;
+        let (names, consts) =
+            if matches!(node.kind(), K::SubDecl | K::FunctionDecl | K::PropertyDecl) {
+                let mut local_names = names.clone();
+                let mut local_consts = consts.clone();
                 for parameter in node.param_list().into_iter().flat_map(|list| list.params()) {
-                    add_name(&mut local, parameter.declarator_name());
+                    if let Some(name) = parameter.declarator_name() {
+                        let folded = crate::model::fold_identifier(name.text);
+                        local_consts.remove(&folded);
+                        local_names.insert(folded);
+                    }
                 }
                 if let Some(body) = node.body_block() {
-                    collect_locals(body, &mut local);
+                    collect_locals(body, &mut local_names, &mut local_consts);
                 }
-                local
+                scoped_names = local_names;
+                scoped_consts = local_consts;
+                (&scoped_names, &scoped_consts)
+            } else {
+                (names, consts)
             };
-            &scoped
-        } else {
-            names
-        };
         for child in node.child_nodes() {
-            self.walk(child, Some(node), names);
+            self.walk(child, Some(node), names, consts);
         }
     }
 
@@ -703,9 +745,13 @@ impl<'a> Scanner<'a> {
         node: SyntaxNode<'_>,
         parent: Option<SyntaxNode<'_>>,
         names: &HashSet<String>,
+        consts: &HashMap<String, String>,
     ) {
         let (token, qualifier) = if node.kind() == K::MemberExpr {
-            let Some(receiver) = node.member_receiver().and_then(library_qualifier) else {
+            let Some(receiver) = node
+                .member_receiver()
+                .and_then(|receiver| library_qualifier(receiver, names))
+            else {
                 return;
             };
             (node.member_name_token(), Some(receiver))
@@ -737,13 +783,21 @@ impl<'a> Scanner<'a> {
         if matches!(row.name, "CreateObject" | "GetObject") {
             let args = parent.and_then(|parent| match parent.kind() {
                 K::IndexExpr => parent.index_arg_list(),
+                K::CallExpr => parent.child_node(K::ArgList),
                 K::CallStmt => parent.call_arg_list(),
                 _ => None,
             });
             let args = args.map(|args| args.arg_items()).unwrap_or_default();
-            let prog_id = string_argument(&args, usize::from(row.name == "GetObject"), "Class");
-            let can_activate = row.name == "CreateObject"
-                || string_argument(&args, 0, "PathName").as_deref() == Some("");
+            let prog_id =
+                string_argument(&args, usize::from(row.name == "GetObject"), "Class", consts);
+            let can_activate = if row.name == "CreateObject" {
+                match argument_item(&args, 1, "ServerName") {
+                    None | Some(calcvba_syntax::red::ArgItem::Omitted) => true,
+                    Some(server) => arg_string(server, consts).as_deref() == Some(""),
+                }
+            } else {
+                string_argument(&args, 0, "PathName", consts).as_deref() == Some("")
+            };
             let portable = match prog_id.as_deref().and_then(BuiltinProgId::resolve) {
                 Some(BuiltinProgId::Dictionary) => true,
                 Some(BuiltinProgId::RegExp) => row.name == "CreateObject",
@@ -818,17 +872,27 @@ fn global_area(area: &str) -> bool {
     )
 }
 
-fn library_qualifier(node: SyntaxNode<'_>) -> Option<String> {
+fn library_qualifier(node: SyntaxNode<'_>, names: &HashSet<String>) -> Option<String> {
     let name = match node.kind() {
-        K::IdentExpr => node.ident_name_token()?.text.to_ascii_lowercase(),
+        K::IdentExpr => {
+            let raw = node.ident_name_token()?.text.trim_matches(['[', ']']);
+            let folded = crate::model::fold_identifier(raw);
+            if names.contains(&folded) {
+                return None;
+            }
+            folded
+        }
         K::MemberExpr
             if node
                 .member_receiver()
-                .and_then(library_qualifier)
+                .and_then(|receiver| library_qualifier(receiver, names))
                 .as_deref()
                 == Some("vba") =>
         {
-            node.member_name_token()?.text.to_ascii_lowercase()
+            node.member_name_token()?
+                .text
+                .trim_matches(['[', ']'])
+                .to_ascii_lowercase()
         }
         _ => return None,
     };
@@ -852,8 +916,156 @@ fn procedure_name(node: SyntaxNode<'_>) -> Option<SyntaxToken<'_>> {
 
 fn add_name(names: &mut HashSet<String>, name: Option<SyntaxToken<'_>>) {
     if let Some(name) = name {
-        names.insert(crate::model::fold_identifier(name.text));
+        names.insert(crate::model::fold_identifier(
+            name.text.trim_matches(['[', ']']),
+        ));
     }
+}
+
+fn is_private_decl(node: SyntaxNode<'_>) -> bool {
+    node.child_tokens().iter().any(|t| t.kind == K::KwPrivate)
+}
+
+fn is_friend_decl(node: SyntaxNode<'_>) -> bool {
+    node.child_tokens().iter().any(|t| t.kind == K::KwFriend)
+}
+
+fn is_explicit_public_decl(node: SyntaxNode<'_>) -> bool {
+    node.child_tokens()
+        .iter()
+        .any(|t| t.kind == K::KwPublic || t.text.eq_ignore_ascii_case("global"))
+}
+
+fn has_option_private_module(syntax: SyntaxNode<'_>) -> bool {
+    syntax.child_nodes().into_iter().any(|node| {
+        node.kind() == K::OptionStmt
+            && node
+                .text()
+                .split_whitespace()
+                .any(|word| word.eq_ignore_ascii_case("private"))
+    })
+}
+
+fn source_has_global_namespace(syntax: SyntaxNode<'_>) -> bool {
+    syntax.child_nodes().into_iter().any(|node| {
+        node.kind() == K::AttributeStmt
+            && node
+                .text()
+                .to_ascii_lowercase()
+                .contains("vb_globalnamespace")
+            && node.text().to_ascii_lowercase().contains("true")
+    })
+}
+
+fn collect_public_exports(
+    module: &ModuleUnit,
+    syntax: SyntaxNode<'_>,
+    cross_project: bool,
+    names: &mut HashSet<String>,
+    consts: &mut HashMap<String, String>,
+) {
+    let exposes_unqualified = module.module_kind == ModuleKind::Procedural
+        || module.attributes.vb_global_namespace
+        || source_has_global_namespace(syntax);
+    if !exposes_unqualified {
+        return;
+    }
+    if cross_project
+        && (module.attributes.option_private_module || has_option_private_module(syntax))
+    {
+        return;
+    }
+    for node in syntax.child_nodes() {
+        if is_private_decl(node) || (cross_project && is_friend_decl(node)) {
+            continue;
+        }
+        match node.kind() {
+            K::SubDecl | K::FunctionDecl | K::PropertyDecl | K::DeclareStmt => {
+                add_name(names, procedure_name(node));
+            }
+            K::DimStmt => {
+                if is_explicit_public_decl(node) {
+                    for decl in node.declarators() {
+                        add_name(names, decl.declarator_name());
+                    }
+                }
+            }
+            K::ConstStmt => {
+                if is_explicit_public_decl(node) {
+                    for decl in node.declarators() {
+                        add_name(names, decl.declarator_name());
+                    }
+                    collect_string_consts(node, consts);
+                }
+            }
+            K::EnumBlock => {
+                add_name(names, node.name_token());
+                for member in node.enum_members() {
+                    add_name(names, member.declarator_name());
+                }
+            }
+            K::TypeBlock => {
+                add_name(names, node.name_token());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_referenced_project_exports(
+    project: &SymbolProjectManifest,
+    projects: &[SymbolProjectManifest],
+    names: &mut HashSet<String>,
+    consts: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    for reference in &project.references {
+        let ProjectReference::Project {
+            referenced_project_name,
+        } = reference
+        else {
+            continue;
+        };
+        if let Some(target_project) = projects.iter().find(|other| {
+            other
+                .project_name
+                .eq_ignore_ascii_case(referenced_project_name)
+        }) {
+            let constants = base_cc_constants_for_target(
+                &target_project.conditional_constants,
+                target_project.conditional_compilation_target,
+            );
+            for module in &target_project.modules {
+                let source = preprocess(&module.source, &constants).map_err(|error| {
+                    format!(
+                        "{}.{}: {error}",
+                        target_project.project_name, module.module_name
+                    )
+                })?;
+                let tree = parse(&source);
+                collect_public_exports(module, tree.syntax(), true, names, consts);
+            }
+        } else if let Some(ref_project) = project.reference_projects.iter().find(|other| {
+            other
+                .project_name
+                .eq_ignore_ascii_case(referenced_project_name)
+        }) {
+            let target = ref_project
+                .conditional_compilation_target
+                .unwrap_or(project.conditional_compilation_target);
+            let constants = base_cc_constants_for_target(&Default::default(), target);
+            for module in &ref_project.modules {
+                let source = preprocess(&module.source, &constants).map_err(|error| {
+                    format!(
+                        "{}.{}: {error}",
+                        ref_project.project_name, module.module_name
+                    )
+                })?;
+                let tree = parse(&source);
+                collect_public_exports(module, tree.syntax(), true, names, consts);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn collect_declarations(node: SyntaxNode<'_>, names: &mut HashSet<String>) {
@@ -861,13 +1073,112 @@ fn collect_declarations(node: SyntaxNode<'_>, names: &mut HashSet<String>) {
     for decl in node.declarators() {
         add_name(names, decl.declarator_name());
     }
+    match node.kind() {
+        K::EnumBlock => {
+            add_name(names, node.name_token());
+            for member in node.enum_members() {
+                add_name(names, member.declarator_name());
+            }
+        }
+        K::TypeBlock | K::EventDecl => {
+            add_name(names, node.name_token());
+        }
+        _ => {}
+    }
 }
 
-fn collect_locals(node: SyntaxNode<'_>, names: &mut HashSet<String>) {
-    collect_declarations(node, names);
-    for child in node.child_nodes() {
-        collect_locals(child, names);
+fn collect_string_consts(node: SyntaxNode<'_>, consts: &mut HashMap<String, String>) {
+    if node.kind() != K::ConstStmt {
+        return;
     }
+    for decl in node.declarators() {
+        let Some(name) = decl.declarator_name() else {
+            continue;
+        };
+        let folded = crate::model::fold_identifier(name.text.trim_matches(['[', ']']));
+        if let Some(value) = decl
+            .expr_children()
+            .into_iter()
+            .next()
+            .and_then(|expr| expr_string(expr, consts))
+        {
+            consts.insert(folded, value);
+        }
+    }
+}
+
+fn collect_locals(
+    node: SyntaxNode<'_>,
+    names: &mut HashSet<String>,
+    consts: &mut HashMap<String, String>,
+) {
+    if node.kind() == K::DimStmt {
+        for decl in node.declarators() {
+            if let Some(name) = decl.declarator_name() {
+                consts.remove(&crate::model::fold_identifier(
+                    name.text.trim_matches(['[', ']']),
+                ));
+            }
+        }
+    }
+    collect_declarations(node, names);
+    collect_string_consts(node, consts);
+    for child in node.child_nodes() {
+        collect_locals(child, names, consts);
+    }
+}
+
+fn scripting_reference_uses_only_dictionary(
+    prepared: &[(&ModuleUnit, calcvba_syntax::Parse)],
+    project_names: &HashSet<String>,
+) -> bool {
+    const NON_DICT_SCRIPTING_TYPES: &[&str] = &[
+        "filesystemobject",
+        "drive",
+        "drives",
+        "folder",
+        "folders",
+        "file",
+        "files",
+        "textstream",
+        "encoder",
+    ];
+
+    fn check_type_name(raw: &str, project_names: &HashSet<String>) -> bool {
+        let trimmed = raw.trim();
+        let trimmed = trimmed
+            .strip_prefix("New ")
+            .or_else(|| trimmed.strip_prefix("new "))
+            .or_else(|| trimmed.strip_prefix("NEW "))
+            .unwrap_or(trimmed)
+            .trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if let Some(member) = lower.strip_prefix("scripting.") {
+            return member == "dictionary" || member == "idictionary";
+        }
+        if !lower.contains('.')
+            && NON_DICT_SCRIPTING_TYPES.contains(&lower.as_str())
+            && !project_names.contains(&lower)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn walk_types(node: SyntaxNode<'_>, project_names: &HashSet<String>) -> bool {
+        if matches!(node.kind(), K::TypeRef | K::NewExpr)
+            && !check_type_name(&node.text(), project_names)
+        {
+            return false;
+        }
+        node.child_nodes()
+            .into_iter()
+            .all(|child| walk_types(child, project_names))
+    }
+
+    prepared
+        .iter()
+        .all(|(_, tree)| walk_types(tree.syntax(), project_names))
 }
 
 fn string_literal(token: SyntaxToken<'_>) -> Option<String> {
@@ -887,11 +1198,11 @@ fn clause_string(node: SyntaxNode<'_>) -> Option<String> {
     node.child_tokens().into_iter().find_map(string_literal)
 }
 
-fn string_argument(
-    args: &[calcvba_syntax::red::ArgItem<'_>],
+fn argument_item<'a>(
+    args: &'a [calcvba_syntax::red::ArgItem<'a>],
     position: usize,
     parameter: &str,
-) -> Option<String> {
+) -> Option<&'a calcvba_syntax::red::ArgItem<'a>> {
     use calcvba_syntax::red::ArgItem;
     args.iter()
         .find(|arg| {
@@ -900,18 +1211,43 @@ fn string_argument(
         })
         .or_else(|| {
             args.get(position)
-                .filter(|arg| matches!(arg, ArgItem::Positional(..)))
+                .filter(|arg| matches!(arg, ArgItem::Positional(..) | ArgItem::Omitted))
         })
-        .and_then(arg_string)
 }
 
-fn arg_string(arg: &calcvba_syntax::red::ArgItem<'_>) -> Option<String> {
+fn string_argument(
+    args: &[calcvba_syntax::red::ArgItem<'_>],
+    position: usize,
+    parameter: &str,
+    consts: &HashMap<String, String>,
+) -> Option<String> {
+    argument_item(args, position, parameter).and_then(|arg| arg_string(arg, consts))
+}
+
+fn expr_string(mut node: SyntaxNode<'_>, consts: &HashMap<String, String>) -> Option<String> {
+    while node.kind() == K::ParenExpr {
+        node = node.expr_children().into_iter().next()?;
+    }
+    match node.kind() {
+        K::LiteralExpr => node.literal_token().and_then(string_literal),
+        K::IdentExpr => {
+            let name = node.ident_name_token()?.text.trim_matches(['[', ']']);
+            consts.get(&crate::model::fold_identifier(name)).cloned()
+        }
+        _ => None,
+    }
+}
+
+fn arg_string(
+    arg: &calcvba_syntax::red::ArgItem<'_>,
+    consts: &HashMap<String, String>,
+) -> Option<String> {
     use calcvba_syntax::red::ArgItem;
     let value = match arg {
         ArgItem::Positional(value, _) | ArgItem::Named { value, .. } => value,
         ArgItem::Omitted => return None,
     };
-    value.literal_token().and_then(string_literal)
+    expr_string(*value, consts)
 }
 
 fn looks_like_windows_path(text: &str) -> bool {

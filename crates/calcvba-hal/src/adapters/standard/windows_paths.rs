@@ -267,7 +267,7 @@ impl StandardHostServices {
         Ok(())
     }
 
-    #[cfg(any(target_os = "linux", target_os = "wasi"))]
+    #[cfg(not(windows))]
     pub(super) fn windows_path_for_host(&self, path: &Path) -> Option<String> {
         let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         self.policy
@@ -282,6 +282,40 @@ impl StandardHostServices {
             .map(|(_, drive, suffix)| {
                 format!("{drive}:\\{}", suffix.to_string_lossy().replace('/', "\\"))
             })
+    }
+
+    #[cfg(not(windows))]
+    pub(super) fn fallback_windows_dir(&self, candidates: &[&[&str]]) -> Option<String> {
+        let (&drive, root_path) = self
+            .policy
+            .windows_drive_roots
+            .get_key_value(&'C')
+            .or_else(|| self.policy.windows_drive_roots.iter().next())?;
+        let root = mapped_root(root_path).ok()?;
+        for segments in candidates {
+            let mut candidate = root.clone();
+            let mut windows_parts = Vec::with_capacity(segments.len());
+            let mut valid = true;
+            for segment in *segments {
+                if segment.is_empty()
+                    || segment.contains(['/', '\\', ':', '\0'])
+                    || matches!(*segment, "." | "..")
+                {
+                    valid = false;
+                    break;
+                }
+                let Ok(matched) = matching_entry(&candidate, segment) else {
+                    valid = false;
+                    break;
+                };
+                candidate.push(&matched);
+                windows_parts.push(matched.to_string_lossy().into_owned());
+            }
+            if valid && candidate.is_dir() {
+                return Some(format!("{drive}:\\{}", windows_parts.join("\\")));
+            }
+        }
+        Some(format!("{drive}:\\"))
     }
 
     fn windows_path_error(

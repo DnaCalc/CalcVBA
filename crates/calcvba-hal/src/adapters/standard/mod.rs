@@ -3310,6 +3310,16 @@ mod tests {
                 Some(5)
             );
             assert_eq!(
+                host.environ_variant(rv(40000)).unwrap_err().host_error_code,
+                Some(6)
+            );
+            assert_eq!(
+                host.environ_variant(rv(-40000))
+                    .unwrap_err()
+                    .host_error_code,
+                Some(6)
+            );
+            assert_eq!(
                 host.environ_variant(Variant::null())
                     .unwrap_err()
                     .host_error_code,

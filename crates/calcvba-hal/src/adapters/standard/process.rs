@@ -494,14 +494,15 @@ impl ProcessEnvHal for StandardHostServices {
                 .with_host_error_code(5));
             }
             if self.native_process_enabled() || self.wasi_native() {
-                #[cfg(any(target_os = "linux", target_os = "wasi"))]
+                #[cfg(not(windows))]
                 if self.uses_windows_paths() {
+                    let folded_name = fold_env_name(name);
                     let value = self
                         .windows_environment()
                         .into_iter()
                         .find(|(key, _)| {
                             key.to_str()
-                                .is_some_and(|key| key.eq_ignore_ascii_case(name))
+                                .is_some_and(|key| fold_env_name(key) == folded_name)
                         })
                         .map(|(_, value)| value)
                         .unwrap_or_default();
@@ -510,22 +511,23 @@ impl ProcessEnvHal for StandardHostServices {
                 let value = std::env::var_os(name).unwrap_or_default();
                 return Ok(environment_value(&value));
             }
+            let folded_name = fold_env_name(name);
             let value = virtual_table
                 .iter()
-                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .find(|(key, _)| fold_env_name(key) == folded_name)
                 .map(|(_, value)| *value)
                 .unwrap_or_default();
             return Ok(Variant::from_string(value));
         }
-        // MS-VBAL: non-string keys are Let-coercible to Long, with ties-to-even rounding.
-        let index = calcvba_eval::arith::coerce_for_byref_target(&key, VarType::Long as u16)
+        // VBA coerces numeric Environ indices to Integer (-32768..=32767, ties-to-even),
+        // raising Overflow (6) outside Integer range before checking 1..=255 (error 5).
+        let index = calcvba_eval::arith::coerce_for_byref_target(&key, VarType::Integer as u16)
             .map_err(|error| {
                 HalError::adapter_fault(self.profile, capability, "environ", error.message)
                     .with_host_error_code(error.code)
             })?
-            .as_i32()
-            .expect("Long coercion returns a Long");
-        // Legacy VB's environment index range; additional boundary cases are queued for Excel.
+            .as_i16()
+            .expect("Integer coercion returns an Integer");
         if !(1..=255).contains(&index) {
             return Err(HalError::adapter_fault(
                 self.profile,
@@ -536,13 +538,13 @@ impl ProcessEnvHal for StandardHostServices {
             .with_host_error_code(5));
         }
         if self.native_process_enabled() || self.wasi_native() {
-            #[cfg(any(target_os = "linux", target_os = "wasi"))]
+            #[cfg(not(windows))]
             let variables: Vec<_> = if self.uses_windows_paths() {
                 self.windows_environment()
             } else {
                 std::env::vars_os().collect()
             };
-            #[cfg(not(any(target_os = "linux", target_os = "wasi")))]
+            #[cfg(windows)]
             let variables: Vec<_> = std::env::vars_os().collect();
             let Some((name, value)) = variables.get((index - 1) as usize) else {
                 return Ok(Variant::from_string(""));
@@ -737,21 +739,42 @@ impl StandardHostServices {
         operation_body(&mut state)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "wasi"))]
+    #[cfg(not(windows))]
     fn windows_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         use std::{env, path::PathBuf};
         let mut vars: Vec<_> = env::vars_os().collect();
-        let temp = if cfg!(target_os = "wasi") {
+        let temp_host = if cfg!(target_os = "wasi") {
             env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
         } else {
             env::temp_dir()
         };
-        let temp = self.windows_path_for_host(&temp);
+        let username = env::var_os("USER").or_else(|| env::var_os("LOGNAME"));
+        let username_str = username.as_deref().and_then(|value| value.to_str());
+        let temp = self
+            .windows_path_for_host(&temp_host)
+            .or_else(|| self.fallback_windows_dir(&[&["Temp"]]));
         let home = env::var_os("HOME").map(PathBuf::from);
         let config = env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .or_else(|| home.as_ref().map(|path| path.join(".config")));
+        let user_profile = home
+            .as_deref()
+            .and_then(|path| self.windows_path_for_host(path))
+            .or_else(|| match username_str {
+                Some(user) => self.fallback_windows_dir(&[&["Users", user]]),
+                None => self.fallback_windows_dir(&[]),
+            });
+        let app_data = config
+            .as_deref()
+            .and_then(|path| self.windows_path_for_host(path))
+            .or_else(|| match username_str {
+                Some(user) => self.fallback_windows_dir(&[
+                    &["Users", user, "AppData", "Roaming"],
+                    &["AppData", "Roaming"],
+                ]),
+                None => self.fallback_windows_dir(&[&["AppData", "Roaming"]]),
+            });
         let hostname = env::var_os("HOSTNAME").or_else(|| {
             if cfg!(target_os = "wasi") {
                 return None;
@@ -763,30 +786,17 @@ impl StandardHostServices {
         let aliases = [
             ("TEMP", temp.clone().map(Into::into)),
             ("TMP", temp.map(Into::into)),
-            (
-                "USERPROFILE",
-                home.as_deref()
-                    .and_then(|path| self.windows_path_for_host(path))
-                    .map(Into::into),
-            ),
-            (
-                "APPDATA",
-                config
-                    .as_deref()
-                    .and_then(|path| self.windows_path_for_host(path))
-                    .map(Into::into),
-            ),
+            ("USERPROFILE", user_profile.map(Into::into)),
+            ("APPDATA", app_data.map(Into::into)),
             ("COMPUTERNAME", hostname),
-            (
-                "USERNAME",
-                env::var_os("USER").or_else(|| env::var_os("LOGNAME")),
-            ),
+            ("USERNAME", username),
         ];
         for (key, value) in aliases {
+            let folded_key = fold_env_name(key);
             if let Some(value) = value
                 && !vars.iter().any(|(old, _)| {
                     old.to_str()
-                        .is_some_and(|old| old.eq_ignore_ascii_case(key))
+                        .is_some_and(|old| fold_env_name(old) == folded_key)
                 })
             {
                 vars.push((key.into(), value));
@@ -808,6 +818,18 @@ impl StandardHostServices {
                 HalError::adapter_fault(self.profile, capability, op, format!("{field}: {message}"))
             })
     }
+}
+
+fn fold_env_name(name: &str) -> String {
+    let mut folded = String::with_capacity(name.len());
+    for ch in name.chars() {
+        let mut upper = ch.to_uppercase();
+        match (upper.next(), upper.next()) {
+            (Some(single), None) => folded.push(single),
+            _ => folded.push(ch),
+        }
+    }
+    folded
 }
 
 fn normalize_setting_name(value: &str) -> String {

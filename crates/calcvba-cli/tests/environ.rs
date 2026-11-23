@@ -73,3 +73,81 @@ End Sub
         );
     }
 }
+
+#[test]
+fn environ_handles_integer_overflow_non_ascii_folding_and_outside_root_aliases() {
+    let root = std::env::temp_dir().join(format!("calcvba-environ-edge-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("main.bas");
+    fs::write(
+        &source,
+        r#"
+Function ErrCode(ByVal idx As Variant) As Long
+    On Error Resume Next
+    Dim s As String
+    s = Environ$(idx)
+    ErrCode = Err.Number
+    Err.Clear
+End Function
+
+Sub Main()
+    Dim tempDir As String, probePath As String, back As String
+    tempDir = Environ$("TEMP")
+    probePath = tempDir & "\probe.txt"
+    Open probePath For Output As #1
+    Print #1, "ok"
+    Close #1
+    Open probePath For Input As #1
+    Line Input #1, back
+    Close #1
+
+    Debug.Print CStr(ErrCode(40000)) & "|" & CStr(ErrCode(-40000)) & "|" & CStr(ErrCode(32000)) & "|" & CStr(ErrCode(0)) & "|" & CStr(ErrCode(256))
+    Debug.Print Environ$("café_var") & "|" & Environ$("STRAßE") & "|" & Environ$("STRASSE")
+    Debug.Print tempDir & "|" & Environ$("TMP") & "|" & Environ$("USERPROFILE") & "|" & Environ$("APPDATA") & "|" & back
+End Sub
+"#,
+    )
+    .unwrap();
+
+    let results = ["vm3", "jit"].map(|backend| {
+        Command::new("env")
+            .arg("-i")
+            .args([
+                "CAFÉ_VAR=latte",
+                "Straße=road",
+                "USER=probeuser",
+                "HOSTNAME=probehost",
+                // Deliberately outside `root` (the mapped C: drive root).
+                "TMPDIR=/tmp",
+                "HOME=/outside-home-dir",
+                "XDG_CONFIG_HOME=/outside-config-dir",
+            ])
+            .arg(env!("CARGO_BIN_EXE_calcvba-cli"))
+            .args([
+                "run",
+                "--backend",
+                backend,
+                "--profile",
+                "linux-stdio",
+                "--portability-mode",
+                "windows-faithful",
+            ])
+            .arg(&source)
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    });
+    fs::remove_dir_all(&root).unwrap();
+
+    for (backend, output) in ["vm3", "jit"].into_iter().zip(results) {
+        let text = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{backend}: {text}");
+        let lines: Vec<_> = text.lines().map(str::trim).collect();
+        assert_eq!(
+            lines,
+            ["6|6|5|5|5", "latte|road|", r"C:\|C:\|C:\|C:\|ok"],
+            "{backend}"
+        );
+    }
+}

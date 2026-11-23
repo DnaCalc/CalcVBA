@@ -145,6 +145,9 @@ impl ComTypeLibProvider {
     /// names no single coclass. Scoped to the event-source path: member resolution stays
     /// keyed on [`owns`] so a library reference does not lump every coclass's members.
     fn owns_coclass_source(&self, type_name: &str) -> bool {
+        if self.blob.identity.requested_coclass.is_some() {
+            return self.owns_members(type_name);
+        }
         if self.owns(type_name) {
             return true;
         }
@@ -399,7 +402,8 @@ impl Provider for ComTypeLibProvider {
             return Some(com_member_binding(member, type_name));
         }
 
-        if let Some(events) = self.scoped_source_events(type_name)
+        if want.is_none()
+            && let Some(events) = self.scoped_source_events(type_name)
             && let Some(event) = events
                 .into_iter()
                 .find(|event| event.name.eq_ignore_ascii_case(name))

@@ -1237,6 +1237,69 @@ fn com_member_does_not_resolve_for_untyped_receiver() {
 }
 
 #[test]
+fn com_coclass_provider_events_never_bleed_into_other_library_coclasses() {
+    let mut blob = widget_blob();
+    blob.identity.reference_name = "Lib".into();
+    blob.identity.requested_coclass = Some("Widget".into());
+    blob.coclass_names = vec!["Widget".into(), "OtherClass".into()];
+    blob.events.push(TypeLibEventMetadata {
+        parameter_iids: Vec::new(),
+        name: "DoThing".into(),
+        token: 42,
+        callback_arity: 0,
+        parameter_types: Vec::new(),
+        dispatch_path: TypeLibEventDispatchPath::Dispatch,
+        connection_point_iid: Some("{11111111-1111-1111-1111-111111111111}".into()),
+        dispatch_member_id: Some(42),
+        coclass: Some("Widget".into()),
+    });
+    let provider = ComTypeLibProvider::new(blob);
+    for widget_name in ["Widget", "Lib.Widget"] {
+        let widget = VarTypeRef::Object(widget_name.into());
+        for want in [Some(ProjectMemberKind::Method), None] {
+            let route = provider
+                .resolve_member(&widget, "DoThing", want)
+                .expect("method resolves on Widget")
+                .route;
+            assert!(
+                matches!(route, DispatchRoute::ComMember { .. }),
+                "{widget_name} want={want:?} got {route:?}"
+            );
+        }
+        assert!(
+            provider
+                .resolve_member(&widget, "Changed", Some(ProjectMemberKind::Method))
+                .is_none(),
+            "event-only name must not masquerade as a callable method"
+        );
+        assert!(
+            matches!(
+                provider
+                    .resolve_member(&widget, "Changed", None)
+                    .map(|b| b.route),
+                Some(DispatchRoute::ComEvent { .. })
+            ),
+            "event resolves when no callable kind is requested"
+        );
+    }
+    for other_name in ["OtherClass", "Lib.OtherClass"] {
+        let other = VarTypeRef::Object(other_name.into());
+        assert!(
+            provider.resolve_member(&other, "DoThing", None).is_none(),
+            "Widget's provider must not resolve its events on sibling coclass {other_name}"
+        );
+        assert!(
+            provider.resolve_member(&other, "Changed", None).is_none(),
+            "Widget's provider must not resolve Changed on sibling coclass {other_name}"
+        );
+        assert!(
+            provider.source_events(&other).is_none(),
+            "Widget's provider must not expose source events on sibling coclass {other_name}"
+        );
+    }
+}
+
+#[test]
 fn com_event_resolves_for_with_events_source_type() {
     let provider = ComTypeLibProvider::new(widget_blob());
     let typed = VarTypeRef::Object("Widget".into());

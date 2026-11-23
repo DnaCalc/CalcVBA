@@ -796,3 +796,46 @@ End Sub
         assert!(world.early_calls.get() >= 10, "{backend:?}");
     }
 }
+
+#[test]
+fn typed_procedure_with_more_than_128_slots_runs_on_interpreter_and_jit() {
+    let mut body = String::from("Public Function SumMany() As Long\n    Dim total As Long\n");
+    for i in 1..=35 {
+        body.push_str(&format!(
+            "    total = total + CLng(Lookup(\"K{i}\").Bump({i}))\n"
+        ));
+    }
+    body.push_str("    SumMany = total\nEnd Function\n");
+
+    let mut project = api::Project::module("Mod1", &body);
+    project.references = vec![api::TypeLibraryReference::named("AlphaLib")];
+
+    let expected: i32 = (1..=35).map(|i| i * 2).sum();
+    for backend in [Backend::Interpreter, Backend::Jit]
+        .into_iter()
+        .filter(|b| *b != Backend::Jit || cfg!(feature = "jit"))
+    {
+        let world = Rc::new(World::default());
+        let root_obj = make_object(world.clone(), NodeKind::Root);
+        let host = Arc::new(TestHost {
+            base: HostBuilder::new().build(),
+            root: std::sync::Mutex::new(Some(Variant::from_object_ref(root_obj.object_ref()))),
+        });
+        let module = Provider::with_host(host)
+            .with_type_libraries(Rc::new(TwoLibResolver))
+            .compile(&project)
+            .unwrap();
+        let session = module.into_session(backend).unwrap();
+        let proc = session
+            .bind("Mod1", "SumMany", ProcedureKind::Function)
+            .unwrap();
+        let mut budget = api::TypedContext {
+            remaining_blocks: 100_000,
+        };
+        let value = session.call_values(&proc, &[], &mut budget).unwrap();
+        assert!(
+            matches!(value, api::Value::Long(got) if got == expected),
+            "{backend:?}: expected {expected}, got {value:?}"
+        );
+    }
+}

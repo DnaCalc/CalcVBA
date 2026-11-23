@@ -1681,10 +1681,17 @@ impl<'a> LowerFunc<'a> {
                     self.emit_store_bool(builder, module, *dst, value)
                 }
                 OxTy::Long => {
-                    if let OxOperand::Use(place) = src
-                        && matches!(place_ty(self.program, self.func, *place)?, OxTy::Array(..))
-                    {
+                    let needs_variant_operand = match src {
+                        OxOperand::Const(
+                            OxConst::F64(_) | OxConst::Str(_) | OxConst::Currency(_),
+                        ) => true,
                         // VBA's array allocation check (Not Not a) needs the array value.
+                        OxOperand::Use(place) => {
+                            matches!(place_ty(self.program, self.func, *place)?, OxTy::Array(..))
+                        }
+                        _ => false,
+                    };
+                    if needs_variant_operand {
                         return self.emit_variant_not_slot_call(builder, module, *dst, src);
                     }
                     let value = self.lower_operand_i32(builder, module, src)?;

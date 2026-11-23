@@ -284,3 +284,124 @@ End Sub
         assert_eq!(lines, [expected, "42"], "{backend}");
     }
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn run_image_enforces_portability_modes_without_source_on_both_backends() {
+    let root = std::env::temp_dir().join(format!("calcvba-oxi-portability-{}", std::process::id()));
+    let out_dir = root.join("out");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let src = root.join("Main.bas");
+    fs::write(
+        &src,
+        "Private Declare PtrSafe Sub Sleep Lib \"kernel32\" (ByVal ms As Long)\n\
+         Private Declare PtrSafe Sub Absent Lib \"kernel32\" ()\n\
+         Public Sub Main()\n\
+             Debug.Print \"entered Main\"\n\
+         End Sub\n",
+    )
+    .unwrap();
+    let proj = root.join("Probe.basproj");
+    fs::write(
+        &proj,
+        r#"<Project Sdk="CalcVBA.Sdk/0.1.0">
+<PropertyGroup><ProjectName>Probe</ProjectName><OutputType>Exe</OutputType></PropertyGroup>
+<ItemGroup><Module Include="Main.bas" /></ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+        .args(["build"])
+        .arg(&proj)
+        .args(["--target", "OxImage", "--out-dir"])
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    // Delete sources so only the compiled .oxi remains.
+    fs::remove_file(&src).unwrap();
+    fs::remove_file(&proj).unwrap();
+    let image = out_dir.join("Probe.oxi");
+
+    // Static check on the source-less image.
+    let check = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+        .args(["check", "--portability", "--host", "linux"])
+        .arg(&image)
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!(report["verdict"], "needs Windows", "{report}");
+    let findings = report["findings"].as_array().unwrap();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f["feature"] == "Declare" && f["verdict"] == "reject"),
+        "{report}"
+    );
+
+    // Load-time rejection on both VM3 and JIT in windows-faithful and strict modes.
+    for backend in ["vm3", "jit"] {
+        for mode in ["windows-faithful", "strict"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+                .args([
+                    "run-image",
+                    "--backend",
+                    backend,
+                    "--profile",
+                    "linux-stdio",
+                    "--portability-mode",
+                    mode,
+                    "--diagnostic-format",
+                    "json",
+                ])
+                .arg(&image)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !output.status.success(),
+                "{backend}/{mode} should reject: {stderr}"
+            );
+            assert!(
+                !stderr.contains("entered Main"),
+                "{backend}/{mode}: {stderr}"
+            );
+            assert!(
+                stderr.contains("PORT-E-UNSUPPORTED")
+                    && stderr.contains("Declare")
+                    && stderr.contains("kernel32"),
+                "{backend}/{mode}: {stderr}"
+            );
+        }
+    }
+
+    // Native mode skips portability rejection and runs the image.
+    let native = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+        .args([
+            "run-image",
+            "--backend",
+            "vm3",
+            "--profile",
+            "linux-stdio",
+            "--portability-mode",
+            "native",
+        ])
+        .arg(&image)
+        .output()
+        .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    assert!(native.status.success(), "{stderr}");
+    assert_eq!(stderr.trim(), "entered Main");
+}

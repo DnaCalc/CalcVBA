@@ -110,6 +110,14 @@ struct DocumentModule {
 }
 impl Module {
     pub fn load(module_name: &str, source: &str) -> Result<Self, Error> {
+        Self::load_with_portability(module_name, source, portability::Mode::Native)
+    }
+
+    pub fn load_with_portability(
+        module_name: &str,
+        source: &str,
+        mode: portability::Mode,
+    ) -> Result<Self, Error> {
         let manifest = sym::SymbolProjectManifest {
             project_name: "HostProject".into(),
             project_kind: sym::ProjectKind::Library,
@@ -124,7 +132,11 @@ impl Module {
             conditional_constants: Default::default(),
             conditional_compilation_target: Default::default(),
         };
-        Self::load_project(&manifest, &calcvba_symbol::CatalogTypeLibResolver)
+        Self::load_project_with_portability(
+            &manifest,
+            &calcvba_symbol::CatalogTypeLibResolver,
+            mode,
+        )
     }
     /// The host supplies ordered references, type libraries and module identities.
     /// No host library name, object model, ProgID or activation is invented here.
@@ -148,6 +160,13 @@ impl Module {
     ) -> Result<Self, Error> {
         mode.check(std::slice::from_ref(manifest), portability::Host::current())
             .map_err(|diagnostic| Error::Compile(diagnostic.render_human()))?;
+        Self::load_project_unchecked(manifest, resolver)
+    }
+
+    fn load_project_unchecked(
+        manifest: &sym::SymbolProjectManifest,
+        resolver: &dyn TypeLibResolver,
+    ) -> Result<Self, Error> {
         let (core, catalogue) = calcvba_bind::bind_program_with_procedures(manifest, resolver)
             .map_err(|e| Error::Compile(e.to_string()))?;
         // The host's typed-stack interpreter has no `VT_BYREF` cells yet (step 10 of the
@@ -264,9 +283,24 @@ impl Module {
         manifests: &[sym::SymbolProjectManifest],
         resolver: &dyn TypeLibResolver,
     ) -> Result<Self, Error> {
+        let mode = manifests
+            .last()
+            .map(portability::Mode::for_project)
+            .unwrap_or(portability::Mode::Native);
+        Self::load_project_graph_with_portability(manifests, resolver, mode)
+    }
+
+    /// Compile leaf-first units with explicit portability enforcement across the whole closure.
+    pub fn load_project_graph_with_portability(
+        manifests: &[sym::SymbolProjectManifest],
+        resolver: &dyn TypeLibResolver,
+        mode: portability::Mode,
+    ) -> Result<Self, Error> {
+        mode.check(manifests, portability::Host::current())
+            .map_err(|diagnostic| Error::Compile(diagnostic.render_human()))?;
         let mut modules = manifests
             .iter()
-            .map(|m| Self::load_project(m, resolver))
+            .map(|m| Self::load_project_unchecked(m, resolver))
             .collect::<Result<Vec<_>, _>>()?;
         let mut root = modules
             .pop()

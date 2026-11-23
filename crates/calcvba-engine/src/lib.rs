@@ -1,6 +1,7 @@
 //! calcvba-engine: engine orchestration for the clean execution stack.
 
 pub mod engine;
+pub mod portability;
 pub mod runner;
 pub mod triage;
 

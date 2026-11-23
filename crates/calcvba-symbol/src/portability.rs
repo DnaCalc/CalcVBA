@@ -115,67 +115,197 @@ impl Mode {
         host: Host,
         browser: BrowserServices,
     ) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
-        use calcvba_diagnostics::{
-            Diagnostic, DiagnosticPhase, DiagnosticSeverity, DiagnosticSource,
-        };
         if self == Self::Native {
             return Ok(Vec::new());
         }
 
         let report = check_project_inner(projects, host, browser).map_err(|message| {
-            Box::new(Diagnostic::error(
+            Box::new(calcvba_diagnostics::Diagnostic::error(
                 "PORT-E-CHECK",
-                DiagnosticPhase::ProjectLoad,
+                calcvba_diagnostics::DiagnosticPhase::ProjectLoad,
                 message,
             ))
         })?;
-        let mut warnings = Vec::new();
-        for finding in report.findings {
-            let location = finding.module.unwrap_or(finding.project);
-            let mut source = DiagnosticSource::module(location);
-            source.line = finding.line.and_then(|line| u32::try_from(line).ok());
-            source.column = finding.line.map(|_| 1);
+        enforce_report(self, report)
+    }
+}
 
-            let is_shell = finding.feature == "Shell";
-            let feature = match finding.detail {
-                Some(detail) => format!("{} ({detail})", finding.feature),
-                None => finding.feature,
-            };
-            let reason = if finding.verdict == Support::Reject {
-                Some("the host has no supported implementation")
-            } else if self == Self::Strict && finding.class == FeatureClass::Windows {
-                Some("strict mode refuses Windows-specific constructs")
-            } else if self == Self::Strict
-                && matches!(finding.verdict, Support::Shim | Support::Replace)
-            {
-                Some("strict mode requires native or modelled behaviour")
-            } else if self == Self::WindowsFaithful && is_shell && host != Host::Windows {
-                Some("the host has no Windows command mapping")
-            } else {
-                None
-            };
-            if let Some(reason) = reason {
-                return Err(Box::new(
-                    Diagnostic::error(
-                        "PORT-E-UNSUPPORTED",
-                        DiagnosticPhase::ProjectLoad,
-                        format!("{feature} on {}: {reason}", host.as_str()),
-                    )
-                    .with_source(source),
-                ));
-            }
-            if self == Self::Strict && finding.verdict == Support::Host {
-                let mut warning = Diagnostic::error(
-                    "PORT-W-HOST-DEPENDENT",
+/// Apply portability mode enforcement to any static or compiled-image [`Report`].
+pub fn enforce_report(
+    mode: Mode,
+    report: Report,
+) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
+    use calcvba_diagnostics::{Diagnostic, DiagnosticPhase, DiagnosticSeverity, DiagnosticSource};
+    if mode == Mode::Native {
+        return Ok(Vec::new());
+    }
+    let host = report.host;
+    let mut warnings = Vec::new();
+    for finding in report.findings {
+        let location = finding.module.unwrap_or(finding.project);
+        let mut source = DiagnosticSource::module(location);
+        source.line = finding.line.and_then(|line| u32::try_from(line).ok());
+        source.column = finding.line.map(|_| 1);
+
+        let is_shell = finding.feature == "Shell";
+        let feature = match finding.detail {
+            Some(detail) => format!("{} ({detail})", finding.feature),
+            None => finding.feature,
+        };
+        let reason = if finding.verdict == Support::Reject {
+            Some("the host has no supported implementation")
+        } else if mode == Mode::Strict && finding.class == FeatureClass::Windows {
+            Some("strict mode refuses Windows-specific constructs")
+        } else if mode == Mode::Strict
+            && matches!(finding.verdict, Support::Shim | Support::Replace)
+        {
+            Some("strict mode requires native or modelled behaviour")
+        } else if mode == Mode::WindowsFaithful && is_shell && host != Host::Windows {
+            Some("the host has no Windows command mapping")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(Box::new(
+                Diagnostic::error(
+                    "PORT-E-UNSUPPORTED",
                     DiagnosticPhase::ProjectLoad,
-                    format!("{feature} on {} depends on host values", host.as_str()),
+                    format!("{feature} on {}: {reason}", host.as_str()),
                 )
-                .with_source(source);
-                warning.severity = DiagnosticSeverity::Warning;
-                warnings.push(warning);
-            }
+                .with_source(source),
+            ));
         }
-        Ok(warnings)
+        if mode == Mode::Strict && finding.verdict == Support::Host {
+            let mut warning = Diagnostic::error(
+                "PORT-W-HOST-DEPENDENT",
+                DiagnosticPhase::ProjectLoad,
+                format!("{feature} on {} depends on host values", host.as_str()),
+            )
+            .with_source(source);
+            warning.severity = DiagnosticSeverity::Warning;
+            warnings.push(warning);
+        }
+    }
+    Ok(warnings)
+}
+
+/// Map a per-host [`Support`] verdict to its aggregate project [`Verdict`].
+pub const fn verdict_for_support(support: Support) -> Verdict {
+    match support {
+        Support::Native | Support::Model => Verdict::Portable,
+        Support::Shim | Support::Replace => Verdict::PortableWithShims,
+        Support::Host => Verdict::HostDependentValues,
+        Support::Reject => Verdict::NeedsWindows,
+    }
+}
+
+/// Look up a single matrix entry and compute its host support.
+pub fn lookup_matrix(
+    area: &str,
+    name: &str,
+    host: Host,
+    browser: BrowserServices,
+) -> Option<(FeatureClass, Support, &'static str)> {
+    let row = matrix::MATRIX
+        .iter()
+        .find(|row| row.area == area && row.name == name)?;
+    Some((row.class, host_support(row, host, browser), row.mac_dialect))
+}
+
+fn host_support(row: &Feature, host: Host, browser: BrowserServices) -> Support {
+    if host == Host::Browser
+        && (row.area == "FileSystem"
+            || matches!(
+                row.name,
+                "Open / Close / Get / Put"
+                    | "Print # / Write # / Line Input #"
+                    | "Name ... As"
+                    | "Input/$"
+                    | "InputB/$"
+                    | "Width"
+                    | "Environ/$"
+            )
+            || (!browser.settings
+                && matches!(
+                    row.name,
+                    "DeleteSetting" | "GetAllSettings" | "GetSetting" | "SaveSetting"
+                ))
+            || (!browser.dialogs && matches!(row.name, "MsgBox" | "InputBox")))
+    {
+        Support::Reject
+    } else {
+        row.support[host as usize]
+    }
+}
+
+/// Classify a `Declare` or native library entry against the host and built-in Win32 shims.
+pub fn declare_support(
+    library: &str,
+    entry: Option<&str>,
+    params: &[(&str, bool)],
+    result: Option<&str>,
+    ordinal_alias: bool,
+    host: Host,
+) -> (FeatureClass, Support) {
+    let lib = library.to_ascii_lowercase();
+    if lib.ends_with(".dylib") {
+        (
+            FeatureClass::Pure,
+            if host == Host::MacOs {
+                Support::Native
+            } else {
+                Support::Reject
+            },
+        )
+    } else if lib.ends_with(".so") || lib.contains(".so.") {
+        (
+            FeatureClass::Shim,
+            if host == Host::Linux {
+                Support::Native
+            } else {
+                Support::Reject
+            },
+        )
+    } else {
+        let support = if host == Host::Windows {
+            Support::Native
+        } else if !ordinal_alias
+            && matches!(host, Host::Linux | Host::MacOs)
+            && entry.is_some_and(|entry| {
+                calcvba_runtime::win32_declare::Win32Declare::resolve(
+                    library, entry, params, result,
+                )
+                .is_some()
+            })
+        {
+            Support::Replace
+        } else {
+            Support::Reject
+        };
+        (FeatureClass::Windows, support)
+    }
+}
+
+/// Classify a `CreateObject` / `GetObject` / `As New` COM ProgID activation on `host`.
+pub fn com_activation_support(
+    is_get_object: bool,
+    prog_id: Option<&str>,
+    can_activate: bool,
+    host: Host,
+) -> Support {
+    if host == Host::Windows {
+        return Support::Native;
+    }
+    let portable = match prog_id.and_then(BuiltinProgId::resolve) {
+        Some(BuiltinProgId::Dictionary) => true,
+        Some(BuiltinProgId::RegExp) => !is_get_object,
+        Some(BuiltinProgId::FileSystemObject | BuiltinProgId::XmlDocument) => host != Host::Browser,
+        None => false,
+    };
+    if can_activate && portable {
+        Support::Replace
+    } else {
+        Support::Reject
     }
 }
 
@@ -509,29 +639,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn support(&self, row: &Feature) -> Support {
-        if self.report.host == Host::Browser
-            && (row.area == "FileSystem"
-                || matches!(
-                    row.name,
-                    "Open / Close / Get / Put"
-                        | "Print # / Write # / Line Input #"
-                        | "Name ... As"
-                        | "Input/$"
-                        | "InputB/$"
-                        | "Width"
-                        | "Environ/$"
-                )
-                || (!self.browser.settings
-                    && matches!(
-                        row.name,
-                        "DeleteSetting" | "GetAllSettings" | "GetSetting" | "SaveSetting"
-                    ))
-                || (!self.browser.dialogs && matches!(row.name, "MsgBox" | "InputBox")))
-        {
-            Support::Reject
-        } else {
-            row.support[self.report.host as usize]
-        }
+        host_support(row, self.report.host, self.browser)
     }
 
     fn windows_native(&self) -> Support {
@@ -1250,7 +1358,7 @@ fn arg_string(
     expr_string(*value, consts)
 }
 
-fn looks_like_windows_path(text: &str) -> bool {
+pub fn looks_like_windows_path(text: &str) -> bool {
     let bytes = text.as_bytes();
     text.starts_with("\\\\")
         || matches!(bytes, [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())

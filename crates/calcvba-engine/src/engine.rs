@@ -1038,11 +1038,34 @@ impl Engine {
         self.portability_mode = Some(mode);
     }
 
+    fn portability_host(&self) -> calcvba_symbol::portability::Host {
+        use calcvba_symbol::portability::Host;
+        match self.runtime_profile {
+            RuntimeProfileId::WindowsGui
+            | RuntimeProfileId::WindowsStdio
+            | RuntimeProfileId::WindowsHeadless => Host::Windows,
+            RuntimeProfileId::LinuxStdio => Host::Linux,
+            RuntimeProfileId::MacOsHeadless => Host::MacOs,
+            RuntimeProfileId::WasmWasiLocal => Host::Wasi,
+            RuntimeProfileId::WasmBrowserSandbox => Host::Browser,
+            RuntimeProfileId::NullFloor => Host::current(),
+        }
+    }
+
+    fn emit_portability_warnings(&self, warnings: Vec<OxDiagnostic>) {
+        for warning in warnings {
+            let _ = self
+                .host_services
+                .diag()
+                .debug_print_variant(Variant::from_string(warning.render_human()));
+        }
+    }
+
     fn check_portability(
         &self,
         projects: &[calcvba_symbol::manifest::SymbolProjectManifest],
     ) -> Result<(), PhaseDiagnostic> {
-        use calcvba_symbol::portability::{Host, Mode};
+        use calcvba_symbol::portability::Mode;
         let Some(entry) = projects.last() else {
             return Ok(());
         };
@@ -1052,16 +1075,7 @@ impl Engine {
         if mode == Mode::Native {
             return Ok(());
         }
-        let host = match self.runtime_profile {
-            RuntimeProfileId::WindowsGui
-            | RuntimeProfileId::WindowsStdio
-            | RuntimeProfileId::WindowsHeadless => Host::Windows,
-            RuntimeProfileId::LinuxStdio => Host::Linux,
-            RuntimeProfileId::MacOsHeadless => Host::MacOs,
-            RuntimeProfileId::WasmWasiLocal => Host::Wasi,
-            RuntimeProfileId::WasmBrowserSandbox => Host::Browser,
-            RuntimeProfileId::NullFloor => Host::current(),
-        };
+        let host = self.portability_host();
         let projects: Vec<_> = projects
             .iter()
             .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
@@ -1069,12 +1083,29 @@ impl Engine {
         let warnings = mode
             .check(&projects, host)
             .map_err(|diagnostic| PhaseDiagnostic::from_diagnostic(*diagnostic))?;
-        for warning in warnings {
-            let _ = self
-                .host_services
-                .diag()
-                .debug_print_variant(Variant::from_string(warning.render_human()));
+        self.emit_portability_warnings(warnings);
+        Ok(())
+    }
+
+    fn check_image_portability(
+        &self,
+        image: &calcvba_oxir::OxImage,
+    ) -> Result<(), PhaseDiagnostic> {
+        use calcvba_symbol::portability::{BrowserServices, Mode};
+        let Some(mode) = self.portability_mode else {
+            return Ok(());
+        };
+        if mode == Mode::Native {
+            return Ok(());
         }
+        let warnings = crate::portability::enforce_image(
+            mode,
+            image,
+            self.portability_host(),
+            BrowserServices::default(),
+        )
+        .map_err(|diagnostic| PhaseDiagnostic::from_diagnostic(*diagnostic))?;
+        self.emit_portability_warnings(warnings);
         Ok(())
     }
 
@@ -1167,6 +1198,7 @@ impl Engine {
                 err.to_string(),
             ))
         })?;
+        self.check_image_portability(image)?;
         let mut programs: Vec<_> = image
             .programs
             .iter()
@@ -1219,6 +1251,7 @@ impl Engine {
                 err.to_string(),
             ))
         })?;
+        self.check_image_portability(&image)?;
         let object_owner = calcvba_runtime::object_owner::RuntimeObjectOwner::fresh()
             .unwrap_or_else(calcvba_runtime::object_owner::RuntimeObjectOwner::current);
         let _owner_scope = object_owner.enter();

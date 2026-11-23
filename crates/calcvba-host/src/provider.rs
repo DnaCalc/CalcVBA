@@ -17,6 +17,7 @@ pub struct Provider {
     class_modules: Vec<String>,
     document_modules: Vec<(String, String)>,
     dictionary: Option<calcvba_symbol::DictionarySource>,
+    portability_mode: Option<crate::portability::Mode>,
 }
 impl Default for Provider {
     fn default() -> Self {
@@ -27,6 +28,7 @@ impl Default for Provider {
             class_modules: vec![],
             document_modules: vec![],
             dictionary: None,
+            portability_mode: None,
         }
     }
 }
@@ -55,6 +57,12 @@ impl Provider {
     }
     pub fn with_type_libraries(mut self, resolver: Rc<dyn TypeLibResolver>) -> Self {
         self.resolver = resolver;
+        self
+    }
+
+    /// Enforce an explicit portability mode on every project and graph load/reload.
+    pub fn with_portability_mode(mut self, mode: crate::portability::Mode) -> Self {
+        self.portability_mode = Some(mode);
         self
     }
 
@@ -142,13 +150,29 @@ impl Provider {
     pub fn compile_graph(&self, graph: &api::ProjectGraph) -> Result<Module, api::Error> {
         let _policy = self.host.enter_com_policy();
         let manifests = self.build_graph_manifests(graph, false)?;
+        let mode = self.portability_mode.unwrap_or_else(|| {
+            manifests
+                .last()
+                .map(crate::portability::Mode::for_project)
+                .unwrap_or(crate::portability::Mode::Native)
+        });
+        if mode != crate::portability::Mode::Native {
+            let portability_manifests = self.build_graph_manifests(graph, true)?;
+            mode.check(&portability_manifests, crate::portability::Host::current())
+                .map_err(|diagnostic| api::Error::Compile(diagnostic.render_human()))?;
+        }
         let resolver = Libraries(
             &self.object_libraries,
             &*self.resolver,
             self.dictionary,
             self.host.permits_com_activation(),
         );
-        let mut module = Module::load_project_graph(&manifests, &resolver).map_err(error)?;
+        let mut module = Module::load_project_graph_with_portability(
+            &manifests,
+            &resolver,
+            crate::portability::Mode::Native,
+        )
+        .map_err(error)?;
         // Reuse the normal compiler retention pass for every unit, including
         // untyped Object/Variant defaults absent from source declarations.
         for program in module
@@ -281,13 +305,29 @@ impl Provider {
     pub fn compile(&self, project: &api::Project) -> Result<Module, api::Error> {
         let _policy = self.host.enter_com_policy();
         let (manifest, libraries) = self.build_project_manifest(project, false)?;
+        let mode = self
+            .portability_mode
+            .unwrap_or_else(|| crate::portability::Mode::for_project(&manifest));
+        if mode != crate::portability::Mode::Native {
+            let (portability_manifest, _) = self.build_project_manifest(project, true)?;
+            mode.check(
+                std::slice::from_ref(&portability_manifest),
+                crate::portability::Host::current(),
+            )
+            .map_err(|diagnostic| api::Error::Compile(diagnostic.render_human()))?;
+        }
         let resolver = Libraries(
             &libraries,
             &*self.resolver,
             self.dictionary,
             self.host.permits_com_activation(),
         );
-        let mut module = Module::load_project(&manifest, &resolver).map_err(error)?;
+        let mut module = Module::load_project_with_portability(
+            &manifest,
+            &resolver,
+            crate::portability::Mode::Native,
+        )
+        .map_err(error)?;
         // An untyped Object/Variant can arrive from any explicitly supplied
         // host interface, even when no source declaration mentions that type.
         // Retain its authoritative default plan before publishing code/handles.
@@ -352,6 +392,7 @@ impl api::RuntimeProvider for Provider {
             class_modules: self.class_modules.clone(),
             document_modules: self.document_modules.clone(),
             dictionary: self.dictionary,
+            portability_mode: self.portability_mode,
             object_libraries: self
                 .object_libraries
                 .iter()
@@ -390,6 +431,7 @@ impl api::RuntimeProvider for Provider {
             class_modules: self.class_modules.clone(),
             document_modules: self.document_modules.clone(),
             dictionary: self.dictionary,
+            portability_mode: self.portability_mode,
             object_libraries: self
                 .object_libraries
                 .iter()
@@ -437,6 +479,7 @@ impl api::RuntimeProvider for Provider {
                 class_modules: self.class_modules.clone(),
                 document_modules: self.document_modules.clone(),
                 dictionary: self.dictionary,
+                portability_mode: self.portability_mode,
                 object_libraries: self.object_libraries.clone(),
             },
         }))

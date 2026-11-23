@@ -188,6 +188,11 @@ fn check_portability(args: &[String]) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             check_project(&[project], host)?
         }
+        "oxi" => {
+            let bytes = fs::read(input).map_err(|error| format!("{}: {error}", input.display()))?;
+            calcvba_engine::portability::check_image_bytes(&bytes, host)
+                .map_err(|error| format!("{}: {error}", input.display()))?
+        }
         _ => {
             let project = resolve_project_file(Some(&input.to_owned()))
                 .map_err(|_| format!("no .basproj or .vbp project at {}", input.display()))?;

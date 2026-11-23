@@ -88,3 +88,170 @@ fn provider_checks_project_graph_with_cross_project_shadowing() {
         "{report:#?}"
     );
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn provider_enforces_portability_mode_across_load_graph_and_reload() {
+    use calcvba_host::portability::Mode;
+    use calcvba_host_api::RuntimeProvider;
+
+    let provider = Provider::default().with_portability_mode(Mode::WindowsFaithful);
+    let unsupported = api::Project::module(
+        "Main",
+        "Private Declare PtrSafe Sub Absent Lib \"kernel32\" ()\n\
+         Public Function Answer() As Long\n\
+             Answer = 42\n\
+         End Function\n",
+    );
+    for backend in [api::Backend::Interpreter, api::Backend::Jit] {
+        let err = match provider.load(&unsupported, backend, api::HOST_API_ABI) {
+            Ok(_) => panic!("expected load rejection for {backend:?}"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("PORT-E-UNSUPPORTED") && message.contains("kernel32!Absent"),
+            "{backend:?}: {message}"
+        );
+    }
+
+    // Valid project with a host-supplied ObjectLibrary loads and executes in windows-faithful mode,
+    // and reloading with a rejected construct fails at reload time while keeping the old session live.
+    let mut valid = api::Project::module(
+        "Main",
+        "Public Function Answer() As Long\nAnswer = 7\nEnd Function\n",
+    );
+    valid.libraries.push(api::ObjectLibrary {
+        name: "HostModel".into(),
+        interfaces: vec![api::ObjectInterface {
+            name: "Sheet".into(),
+            iid: [2; 16],
+            members: vec![api::ObjectMember {
+                name: "Value".into(),
+                slot: 0,
+                kind: api::MemberKind::PropertyGet,
+                parameters: vec![],
+                result: api::ScalarType::Double,
+                is_default: true,
+            }],
+        }],
+    });
+    let mut session = provider
+        .load(&valid, api::Backend::Interpreter, api::HOST_API_ABI)
+        .expect("host library project should pass windows-faithful");
+    let handle = session
+        .bind("Main", "Answer", api::ProcedureKind::Function)
+        .unwrap();
+    assert_eq!(
+        session.call_bound(&handle, &[], 10_000).unwrap(),
+        api::Variant::from_i32(7)
+    );
+    let reload_err = session.reload(&unsupported).unwrap_err().to_string();
+    assert!(
+        reload_err.contains("PORT-E-UNSUPPORTED") && reload_err.contains("kernel32!Absent"),
+        "{reload_err}"
+    );
+    // Original session remains intact after rejected reload.
+    assert_eq!(
+        session.call_bound(&handle, &[], 10_000).unwrap(),
+        api::Variant::from_i32(7)
+    );
+
+    // Project graph load & reload_graph also enforce portability across referenced libraries.
+    let bad_helper = api::ProjectNode {
+        project: api::Project {
+            name: "Helper".into(),
+            modules: vec![api::SourceModule {
+                name: "Utils".into(),
+                source: "Public Sub Bad()\nSendKeys \"x\"\nEnd Sub\n".into(),
+            }],
+            libraries: vec![],
+            references: vec![],
+        },
+        references: vec![],
+    };
+    let good_helper = api::ProjectNode {
+        project: api::Project {
+            name: "Helper".into(),
+            modules: vec![api::SourceModule {
+                name: "Utils".into(),
+                source: "Public Function Dir() As String\nDir = \"ok\"\nEnd Function\n".into(),
+            }],
+            libraries: vec![],
+            references: vec![],
+        },
+        references: vec![],
+    };
+    let entry = api::ProjectNode {
+        project: api::Project {
+            name: "Entry".into(),
+            modules: vec![api::SourceModule {
+                name: "Main".into(),
+                source: "Public Function Run() As String\nRun = Dir()\nEnd Function\n".into(),
+            }],
+            libraries: vec![],
+            references: vec![],
+        },
+        references: vec![api::ProjectReference::Source("Helper".into())],
+    };
+    let bad_graph = api::ProjectGraph {
+        root: "Entry".into(),
+        projects: vec![bad_helper, entry.clone()],
+    };
+    let graph_err = match provider.load_graph(
+        &bad_graph,
+        &[],
+        api::Backend::Interpreter,
+        api::HOST_API_ABI,
+    ) {
+        Ok(_) => panic!("expected bad graph rejection"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        graph_err.contains("PORT-E-UNSUPPORTED") && graph_err.contains("SendKeys"),
+        "{graph_err}"
+    );
+
+    // Strict mode allows shadowed Dir() across a project graph, then refuses bad_graph on reload_graph.
+    let strict_provider = Provider::default().with_portability_mode(Mode::Strict);
+    let good_graph = api::ProjectGraph {
+        root: "Entry".into(),
+        projects: vec![good_helper, entry],
+    };
+    let mut graph_session = strict_provider
+        .load_graph(
+            &good_graph,
+            &[],
+            api::Backend::Interpreter,
+            api::HOST_API_ABI,
+        )
+        .expect("shadowed Dir should pass strict mode");
+    let reload_graph_err = graph_session
+        .reload_graph(&bad_graph)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        reload_graph_err.contains("PORT-E-UNSUPPORTED") && reload_graph_err.contains("SendKeys"),
+        "{reload_graph_err}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn module_load_with_portability_rejects_unsupported_source() {
+    use calcvba_host::Module;
+    use calcvba_host::portability::Mode;
+
+    let err = match Module::load_with_portability(
+        "Main",
+        "Sub Main()\nSendKeys \"a\"\nEnd Sub\n",
+        Mode::WindowsFaithful,
+    ) {
+        Ok(_) => panic!("expected rejection"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        err.contains("PORT-E-UNSUPPORTED") && err.contains("SendKeys"),
+        "{err}"
+    );
+}

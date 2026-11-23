@@ -1332,6 +1332,20 @@ impl ScalarLayout {
             }
             if !owning && *ty == OxTy::Variant {
                 None
+            } else if owning
+                && !native_numbers
+                && matches!(
+                    ty,
+                    OxTy::Byte
+                        | OxTy::Integer
+                        | OxTy::LongLong
+                        | OxTy::Single
+                        | OxTy::Currency
+                        | OxTy::Date
+                        | OxTy::Decimal
+                )
+            {
+                Some(ScalarType::Variant)
             } else {
                 storage_type(ty)
             }
@@ -2617,8 +2631,10 @@ impl ScalarLayout {
                         OxCoerceTarget::Numeric(N::Long | N::Double | N::Boolean)
                             | OxCoerceTarget::Str
                             | OxCoerceTarget::ImplicitVariant
-                    ) || (self.native_numbers
-                        && matches!(target, OxCoerceTarget::FixedStr(_)))) =>
+                    ) || (self.slots[self.slot(*dst)?] == ScalarType::Variant
+                        && matches!(target, OxCoerceTarget::Numeric(_)))
+                        || (self.native_numbers
+                            && matches!(target, OxCoerceTarget::FixedStr(_)))) =>
             {
                 self.slot(*dst)?;
                 self.operand_type(src)?;

@@ -318,6 +318,18 @@ impl TypeLibResolver for TwoLibResolver {
                             Some((P::Object, W::Automation(P::Object))),
                             false,
                         ),
+                        disp_member(
+                            IID_ITEM,
+                            "Place",
+                            56,
+                            K::Method,
+                            &[
+                                ("Left", P::Single, false, D::Required),
+                                ("Top", P::Single, false, D::Required),
+                            ],
+                            Some((P::Single, W::Automation(P::Single))),
+                            false,
+                        ),
                     ],
                     vec![],
                 ),
@@ -559,6 +571,11 @@ impl HostObjectServices for Node {
                 let clone = make_object(self.world.clone(), NodeKind::Item(key.clone()));
                 Ok(Variant::from_object_ref(clone.object_ref()))
             }
+            (NodeKind::Item(_), 56, DynamicMemberKind::Method) => {
+                let left = args[0].as_f32().expect("Single Left param");
+                let top = args[1].as_f32().expect("Single Top param");
+                Ok(Variant::from_f32(left + top))
+            }
             (NodeKind::Panel, 114, DynamicMemberKind::Get) => {
                 assert_eq!(call.vtable_slot, Some(36));
                 let content = make_object(self.world.clone(), NodeKind::Content);
@@ -740,7 +757,7 @@ Private Sub SheetDoc_Changed(ByVal Target As AlphaLib.Item)
     For Each eachVal In dynObj
         totalDyn = totalDyn + CLng(eachVal)
     Next eachVal
-    Summary = Target.Panel.Content.Text & "|" & CStr(Me.Lookup("C1").Value) & "|" & CStr(Lookup("D1").Value) & "|" & CStr(direct) & "|" & CStr(bumped) & ":" & CStr(n) & "|" & CStr(total) & "|" & mixed & ":" & CStr(outVal) & "|" & CStr(totalDyn) & "|" & CStr(dynVal)
+    Summary = Target.Panel.Content.Text & "|" & CStr(Me.Lookup("C1").Value) & "|" & CStr(Lookup("D1").Value) & "|" & CStr(direct) & "|" & CStr(bumped) & ":" & CStr(n) & "|" & CStr(total) & "|" & mixed & ":" & CStr(outVal) & "|" & CStr(totalDyn) & "|" & CStr(dynVal) & "|" & CStr(Target.Place(10, 20.5))
 End Sub
 "#
         .into(),
@@ -790,7 +807,7 @@ End Sub
         };
         assert_eq!(
             text.as_str(),
-            "Main:[EXT]A1|15|42|42|8:9|60|7:true:13|60|42",
+            "Main:[EXT]A1|15|42|42|8:9|60|7:true:13|60|42|30.5",
             "{backend:?}"
         );
         assert!(world.early_calls.get() >= 10, "{backend:?}");

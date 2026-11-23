@@ -624,12 +624,27 @@ impl ScalarLower<'_> {
                         .copied()
                         .unwrap_or(false) =>
             {
-                b.ins().load(
-                    machine_type(ty),
-                    ir::MemFlagsData::new(),
-                    frame,
-                    (std::mem::offset_of!(RawActivation, slots) + index * 8) as i32,
-                )
+                if index < calcvba_rt_abi::host_entry::INLINE_TYPED_SLOTS {
+                    b.ins().load(
+                        machine_type(ty),
+                        ir::MemFlagsData::new(),
+                        frame,
+                        (std::mem::offset_of!(RawActivation, slots) + index * 8) as i32,
+                    )
+                } else {
+                    let overflow = b.ins().load(
+                        types::I64,
+                        ir::MemFlagsData::new(),
+                        frame,
+                        std::mem::offset_of!(RawActivation, overflow_slots) as i32,
+                    );
+                    b.ins().load(
+                        machine_type(ty),
+                        ir::MemFlagsData::new(),
+                        overflow,
+                        ((index - calcvba_rt_abi::host_entry::INLINE_TYPED_SLOTS) * 8) as i32,
+                    )
+                }
             }
             PhysicalSlots::Frame(frame) => {
                 let output = b.create_sized_stack_slot(StackSlotData::new(
@@ -724,12 +739,27 @@ impl ScalarLower<'_> {
                         .copied()
                         .unwrap_or(false) =>
             {
-                b.ins().store(
-                    ir::MemFlagsData::new(),
-                    value,
-                    frame,
-                    (std::mem::offset_of!(RawActivation, slots) + index * 8) as i32,
-                );
+                if index < calcvba_rt_abi::host_entry::INLINE_TYPED_SLOTS {
+                    b.ins().store(
+                        ir::MemFlagsData::new(),
+                        value,
+                        frame,
+                        (std::mem::offset_of!(RawActivation, slots) + index * 8) as i32,
+                    );
+                } else {
+                    let overflow = b.ins().load(
+                        types::I64,
+                        ir::MemFlagsData::new(),
+                        frame,
+                        std::mem::offset_of!(RawActivation, overflow_slots) as i32,
+                    );
+                    b.ins().store(
+                        ir::MemFlagsData::new(),
+                        value,
+                        overflow,
+                        ((index - calcvba_rt_abi::host_entry::INLINE_TYPED_SLOTS) * 8) as i32,
+                    );
+                }
             }
             PhysicalSlots::Frame(frame) => {
                 let input = b.create_sized_stack_slot(StackSlotData::new(

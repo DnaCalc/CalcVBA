@@ -1,9 +1,12 @@
 //! One-operation record/array kernels over the original admitted instruction.
 use super::{ScalarLayout, ScalarType as T, activation::*, value::*};
-use calcvba_host_api::Value;
+use calcvba_host_api::{
+    TypedContext, Value,
+    object::{DynamicArgument, DynamicMemberCall, DynamicMemberKind},
+};
 use calcvba_oxir::{OxInst, OxOperand, OxPlace};
 use calcvba_runtime::{
-    Variant,
+    ObjectRefExt, Variant,
     safe_array::{SafeArray, SafeArrayBound},
     vba_record::VbaRecord,
 };
@@ -186,7 +189,11 @@ pub fn array_flat_index(bounds: &[SafeArrayBound], indices: &[i64]) -> Result<us
 }
 // SAFETY CONTRACT: raw and inst are the matching retained, uniquely executing
 // activation and original admitted instruction. No borrowed carrier escapes.
-pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<(), i32> {
+pub(super) unsafe fn evaluate(
+    raw: *mut RawActivation,
+    inst: &OxInst,
+    context: &mut TypedContext,
+) -> Result<(), i32> {
     // SAFETY: retained immutable admission facts span this operation.
     let layout = unsafe { &*(*raw).layout };
     // SAFETY: operand_value snapshots leased carriers and never runs a callback.
@@ -451,6 +458,34 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
             indices: subscripts,
         } => {
             let value = read(array)?;
+            if !value.holds_array()
+                && let Some(reference) = value.as_object_ref()
+            {
+                let mut args = subscripts
+                    .iter()
+                    .map(&read)
+                    .collect::<Result<Vec<_>, i32>>()?;
+                let item = if reference.native_collection_snapshot().is_some() {
+                    super::collection::invoke(&reference, "Item", &args, &[])?
+                } else {
+                    let call = DynamicMemberCall {
+                        name: None,
+                        kind: DynamicMemberKind::Get,
+                        arguments: (0..args.len())
+                            .map(|alias| DynamicArgument {
+                                name: None,
+                                by_ref: false,
+                                alias,
+                            })
+                            .collect(),
+                    };
+                    super::member::host_view(&reference)
+                        .ok_or(438)?
+                        .invoke_dynamic(&call, &mut args, context)
+                        .map_err(|fault| fault.publish(context))?
+                };
+                return store(*dst, item);
+            }
             let (bounds, _) = value.safearray_bounds_len().ok_or(9)?;
             let flat = array_flat_index(&bounds, &indices(subscripts)?)?;
             let alias = if let OxOperand::Use(place) = array {
@@ -473,9 +508,37 @@ pub(super) unsafe fn evaluate(raw: *mut RawActivation, inst: &OxInst) -> Result<
             indices: subscripts,
             value,
         } => {
-            let indices = indices(subscripts)?;
             let value = read(value)?;
             let mut target = read(&OxOperand::Use(*array))?;
+            if !target.holds_array()
+                && let Some(reference) = target.as_object_ref()
+            {
+                if reference.native_collection_snapshot().is_some() {
+                    return Err(438);
+                }
+                let mut args = subscripts
+                    .iter()
+                    .map(&read)
+                    .collect::<Result<Vec<_>, i32>>()?;
+                args.push(value);
+                let call = DynamicMemberCall {
+                    name: None,
+                    kind: DynamicMemberKind::Let,
+                    arguments: (0..args.len())
+                        .map(|alias| DynamicArgument {
+                            name: None,
+                            by_ref: false,
+                            alias,
+                        })
+                        .collect(),
+                };
+                super::member::host_view(&reference)
+                    .ok_or(438)?
+                    .invoke_dynamic(&call, &mut args, context)
+                    .map_err(|fault| fault.publish(context))?;
+                return Ok(());
+            }
+            let indices = indices(subscripts)?;
             let (bounds, _) = target.safearray_bounds_len().ok_or(9)?;
             let flat = array_flat_index(&bounds, &indices)?;
             // SAFETY: alias metadata is retained by this boxed stack.

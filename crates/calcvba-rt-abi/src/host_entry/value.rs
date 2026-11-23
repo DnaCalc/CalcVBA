@@ -257,8 +257,9 @@ pub unsafe extern "C" fn evaluate(
                 .map_or_else(|e| e, |()| 0);
         }
         if super::aggregate::is_aggregate(inst) {
-            // SAFETY: original admitted instruction and leased physical frame.
-            return unsafe { super::aggregate::evaluate(raw, inst) }.map_or_else(|e| e, |()| 0);
+            // SAFETY: original admitted instruction, leased physical frame, and unique context.
+            return unsafe { super::aggregate::evaluate(raw, inst, &mut *context) }
+                .map_or_else(|e| e, |()| 0);
         }
         if let OxInst::ComCallEarly { .. } = inst {
             // SAFETY: same leased frame/original instruction and unique context.

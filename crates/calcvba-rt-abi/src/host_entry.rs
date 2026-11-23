@@ -10,6 +10,7 @@ use calcvba_runtime::ObjectRefExt;
 pub use calcvba_host_api::{
     Arguments, MAX_TYPED_ARGS, Scalar, ScalarBits, TYPED_ENTRY_ABI, TypedContext,
 };
+pub const INLINE_TYPED_SLOTS: usize = 128;
 pub const MAX_TYPED_SLOTS: usize = 1024;
 pub use calcvba_host_api::ValueType as ScalarType;
 pub mod activation;

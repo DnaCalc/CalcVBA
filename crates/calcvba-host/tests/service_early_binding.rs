@@ -864,3 +864,68 @@ fn typed_procedure_with_more_than_128_slots_runs_on_interpreter_and_jit() {
         );
     }
 }
+
+#[test]
+fn for_each_variant_array_and_collection_plus_1d_long_indexed_collection_work_on_interpreter_and_jit()
+ {
+    let source = r#"
+Private Function SumVariant(ByVal v As Variant) As Long
+    Dim elem As Variant
+    Dim total As Long
+    For Each elem In v
+        total = total + CLng(elem)
+    Next elem
+    SumVariant = total
+End Function
+
+Private Function IndexVariant(ByVal v As Variant) As Long
+    Dim i As Long
+    Dim total As Long
+    For i = 1 To v.Count
+        total = total + CLng(v(i))
+    Next i
+    IndexVariant = total
+End Function
+
+Public Function RunCheck() As String
+    Dim arr As Variant
+    arr = Array(3, 5, 7)
+    Dim col As Collection
+    Set col = New Collection
+    col.Add 10
+    col.Add 20
+    col.Add 30
+    Dim colVar As Variant
+    Set colVar = col
+    RunCheck = CStr(SumVariant(arr)) & "|" & CStr(SumVariant(colVar)) & "|" & CStr(IndexVariant(colVar))
+End Function
+"#;
+    let project = api::Project::module("Mod1", source);
+    for backend in [Backend::Interpreter, Backend::Jit]
+        .into_iter()
+        .filter(|b| *b != Backend::Jit || cfg!(feature = "jit"))
+    {
+        let module = Provider::with_host(HostBuilder::new().build())
+            .compile(&project)
+            .unwrap();
+        let session = module.into_session(backend).unwrap();
+        let proc = session
+            .bind("Mod1", "RunCheck", ProcedureKind::Function)
+            .unwrap();
+        let mut budget = api::TypedContext {
+            remaining_blocks: 100_000,
+        };
+        let value = session.call_values(&proc, &[], &mut budget).unwrap();
+        let api::Value::String(text) = value else {
+            panic!("{backend:?}: expected String, got {value:?}");
+        };
+        assert_eq!(text.as_str(), "15|60|60", "{backend:?}");
+        // Also exercise the dynamic call_bound route (JIT 1D i32 fast path).
+        let dyn_val = session.call_bound(&proc, &[], 100_000).unwrap();
+        assert_eq!(
+            dyn_val.as_bstr().map(|s| s.as_str().to_owned()).as_deref(),
+            Some("15|60|60"),
+            "{backend:?} dynamic"
+        );
+    }
+}

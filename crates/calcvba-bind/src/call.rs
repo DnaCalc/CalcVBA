@@ -3905,6 +3905,19 @@ impl<'a> ProcLower<'a> {
     /// The receiver of an application object's member (`Range` is `AppObject(Global).Range`),
     /// typed as the application object so its members bind early.
     pub(crate) fn app_object_receiver(&self, type_name: &str, class: &str) -> Bound {
+        if class == crate::HOST_DOCUMENT_CLASS
+            && let Some(me) = self.me_value()
+        {
+            let place = CorePlace::Field {
+                object: Box::new(me),
+                field: calcvba_bundle::HOST_DOCUMENT_FIELD,
+            };
+            return Bound {
+                value: CoreValue::Load(place.clone()),
+                place: Some(place),
+                ty: VarTypeRef::Object(type_name.to_string()),
+            };
+        }
         value_bound(
             CoreValue::Call {
                 callee: CoreCallee::Native(NativeImplId::AppObject),

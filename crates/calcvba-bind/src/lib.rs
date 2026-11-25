@@ -1432,10 +1432,32 @@ impl<'a> ProcLower<'a> {
 
     fn resolve(&self, name: &str) -> Option<Binding> {
         // Declarations are scanned without their brackets (`[_opMin]` declares `_opMin`).
-        self.g.env.resolve(
-            &ResolutionContext::at(self.info.proc_scope),
-            unbracket_identifier(name),
-        )
+        self.g
+            .env
+            .resolve(
+                &ResolutionContext::at(self.info.proc_scope),
+                unbracket_identifier(name),
+            )
+            .or_else(|| self.resolve_document_host_member(unbracket_identifier(name)))
+    }
+
+    /// In a document module (`ThisWorkbook`, a sheet) a bare name that neither the project nor
+    /// the library's global members answer is a member of the document's own host object, as if
+    /// written `Me.<name>` (`PrintOut`, `Shapes("x")` in a sheet's code).
+    fn resolve_document_host_member(&self, name: &str) -> Option<Binding> {
+        self.me_value()?;
+        let class = self.info.class_name.as_deref()?;
+        let host = self
+            .g
+            .document_host_type(&VarTypeRef::Object(class.to_string()))?;
+        self.resolve_member(&VarTypeRef::Object(host.to_string()), name, None)?;
+        Some(Binding::new(
+            None,
+            DispatchRoute::AppObjectMember {
+                type_name: host.to_string(),
+                class: HOST_DOCUMENT_CLASS.to_string(),
+            },
+        ))
     }
 
     /// Resolve a bare identifier that may carry a type-declaration suffix (`Left$`,
@@ -1695,6 +1717,10 @@ impl<'a> ProcLower<'a> {
             .has_ambiguous_unqualified_name(unbracket_identifier(name))
     }
 }
+
+/// The `class` an [`DispatchRoute::AppObjectMember`] carries when the receiver is the enclosing
+/// document module's own host object rather than the application's instance.
+pub(crate) const HOST_DOCUMENT_CLASS: &str = "__host_document";
 
 fn is_unqualified_name_context(context: &str) -> bool {
     matches!(

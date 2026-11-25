@@ -129,6 +129,14 @@ impl OwnedSession {
         self.cell
             .with_dependent(|_, s| s.call_bound(handle, args, max_steps))
     }
+    pub fn call_bound_reentrant(
+        &self,
+        handle: &BoundProcedure,
+        args: &[Variant],
+    ) -> Result<Variant, Error> {
+        self.cell
+            .with_dependent(|_, s| s.call_bound_reentrant(handle, args))
+    }
     pub fn bind_typed_handle<A: Arguments, R: Scalar>(
         &self,
         bound: &BoundProcedure,

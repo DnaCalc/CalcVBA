@@ -405,6 +405,18 @@ pub trait Session {
         args: &[Variant],
         max_steps: u64,
     ) -> Result<Variant, Error>;
+    /// Call a bound Sub or Function from inside a host member that a running procedure of this
+    /// session called (`Application.Run`), on that run: its frames, globals and Err state, and the
+    /// budget it has left. `Err(Reentry)` when no procedure of this session is running on this
+    /// thread; a provider without the capability keeps this default.
+    fn call_bound_reentrant(
+        &self,
+        handle: &BoundProcedure,
+        args: &[Variant],
+    ) -> Result<Variant, Error> {
+        let _ = (handle, args);
+        Err(Error::Reentry)
+    }
     fn bind_slots(
         &self,
         module: &str,

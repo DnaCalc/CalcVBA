@@ -1142,6 +1142,39 @@ impl<'a> Session<'a> {
         );
         result.map_err(|number| frame.error(number, &self.module.program.unit_name))
     }
+    /// The reentrant form of [`call_bound`](Self::call_bound): called from a host member that a
+    /// running procedure of this session called (`Application.Run`), it runs the bound procedure
+    /// on that run. `Error::Reentry` when no procedure of this session is running on this thread.
+    pub fn call_bound_reentrant(
+        &self,
+        handle: &BoundProcedure,
+        args: &[Variant],
+    ) -> Result<Variant, Error> {
+        self.validate(handle)?;
+        let procedure = &self.module.procedures[handle.metadata];
+        if args.len() != procedure.parameters.len()
+            || args
+                .iter()
+                .zip(&procedure.parameters)
+                .any(|(value, p)| !prepared_argument_matches(value, &p.ty))
+        {
+            return Err(Error::ArgumentMismatch);
+        }
+        let unit = self.module.programs().len() - 1;
+        match calcvba_runtime::events::call_project_procedure(unit, handle.id.0, args.to_vec()) {
+            None => Err(Error::Reentry),
+            Some(Ok(value)) => Ok(value),
+            Some(Err(fault)) => Err(Error::Runtime {
+                number: fault.number,
+                description: fault.description.to_string_lossy(),
+                vba_source: if fault.source.is_empty() {
+                    self.module.program.unit_name.clone()
+                } else {
+                    fault.source.to_string_lossy()
+                },
+            }),
+        }
+    }
     /// Explicit dynamic adapter: exact-arity arguments already prepared by host.
     pub fn call_bound(
         &self,

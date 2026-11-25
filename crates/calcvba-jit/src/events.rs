@@ -5,7 +5,9 @@
 //! unhandled ends the run once the host call returns (`ST_ABORT` with the fault recorded), and
 //! so does `End` in a handler (`ST_HALT`).
 use super::*;
-use crate::helpers::{after_jit_frame_pop, invoke_project_member_with_me};
+use crate::helpers::{
+    after_jit_frame_pop, invoke_project_member_with_me, invoke_project_procedure_values,
+};
 use calcvba_runtime::com::DISP_E_PARAMNOTFOUND;
 use calcvba_runtime::events::{EventExecutor, EventFault, ExecutorScope, MemberFault};
 use calcvba_runtime::{
@@ -135,6 +137,59 @@ impl EventExecutor for JitEventExecutor {
                     .pending_abort
                     .get_or_insert(calcvba_rt_abi::RunAbort::Fault(fault));
                 Err(reported)
+            }
+        }
+    }
+
+    fn call_project_procedure(
+        &mut self,
+        unit: usize,
+        proc: usize,
+        args: Vec<Variant>,
+    ) -> Result<Variant, MemberFault> {
+        let (state, run) = (self.state, self.run);
+        // The caller's Err state survives the nested call, as for an incoming member callback.
+        let saved_err = {
+            // SAFETY: the active run is suspended inside a host call with no live `ExecState` borrow.
+            let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+                return Err(MemberFault::from_number(51));
+            };
+            exec.err_engine.clone()
+        };
+        // SAFETY: `state` and `run` are the active run's roots, unborrowed inside the host call.
+        let result = unsafe { invoke_project_procedure_values(run, state, unit, proc, &args) };
+        // SAFETY: the call returned; `ExecState` is unborrowed.
+        let Some(exec) = (unsafe { jit_exec_state_mut(state) }) else {
+            return Err(MemberFault::from_number(51));
+        };
+        match result {
+            Ok(value) => {
+                *exec.err_engine = *saved_err;
+                Ok(value)
+            }
+            Err(ST_HALT) => {
+                *exec.err_engine = *saved_err;
+                exec.events
+                    .pending_abort
+                    .get_or_insert(calcvba_rt_abi::RunAbort::End);
+                Ok(Variant::empty())
+            }
+            Err(_) => {
+                let err = &exec.err_engine.err;
+                let number = if err.number != 0 { err.number } else { 51 };
+                let fault = MemberFault {
+                    number,
+                    description: if err.description.is_empty() {
+                        default_error_message(number).into()
+                    } else {
+                        err.description.clone()
+                    },
+                    source: err.source.clone(),
+                    help_file: err.help_file.clone(),
+                    help_context: err.help_context,
+                };
+                *exec.err_engine = *saved_err;
+                Err(fault)
             }
         }
     }

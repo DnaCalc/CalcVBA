@@ -86,6 +86,20 @@ pub trait EventExecutor {
         let _ = (object, member, invoke_kind, args, aliases);
         Err(MemberFault::from_number(438))
     }
+
+    /// Run the project procedure `proc` of linked unit `unit` (a Sub or Function with no hidden
+    /// receiver) on the active run with already prepared `args`: the reentrant dynamic call a host
+    /// member makes while a procedure of this run is inside it (`Application.Run`). The result is
+    /// the Function's value, or Empty for a Sub.
+    fn call_project_procedure(
+        &mut self,
+        unit: usize,
+        proc: usize,
+        args: Vec<Variant>,
+    ) -> Result<Variant, MemberFault> {
+        let _ = (unit, proc, args);
+        Err(MemberFault::from_number(438))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -207,6 +221,24 @@ pub fn invoke_member(
     })
 }
 
+/// Runs a project procedure on the thread's innermost active event executor (the running VM or
+/// JIT run that is inside a host call). `None` when no run is active on this thread.
+pub fn call_project_procedure(
+    unit: usize,
+    proc: usize,
+    args: Vec<Variant>,
+) -> Option<Result<Variant, MemberFault>> {
+    let executor = EXECUTORS.with(|stack| {
+        stack.borrow().iter().rev().find_map(|entry| match *entry {
+            ActiveExecutor::Event(executor) => Some(executor),
+            ActiveExecutor::Member(_) => None,
+        })
+    })?;
+    // SAFETY: as for `deliver`: the registered executor is valid and unused by its owner while its
+    // host call runs, and no borrow of the stack is held across the call.
+    Some(unsafe { (*executor.as_ptr()).call_project_procedure(unit, proc, args) })
+}
+
 /// Whether an event executor is registered on this thread.
 pub fn has_executor() -> bool {
     EXECUTORS.with(|stack| {
@@ -220,4 +252,47 @@ pub fn has_executor() -> bool {
 /// Whether any member invoker (active run or session scope) is registered on this thread.
 pub fn has_member_invoker() -> bool {
     EXECUTORS.with(|stack| !stack.borrow().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Doubler;
+    impl EventExecutor for Doubler {
+        fn deliver_event(&mut self, _: u64, _: i32, _: &[Variant]) -> Result<bool, EventFault> {
+            Ok(false)
+        }
+        fn call_project_procedure(
+            &mut self,
+            unit: usize,
+            proc: usize,
+            args: Vec<Variant>,
+        ) -> Result<Variant, MemberFault> {
+            if proc == 9 {
+                return Err(MemberFault::from_number(11));
+            }
+            let n = args[0].as_i32().unwrap();
+            Ok(Variant::from_i32(n * 2 + unit as i32 + proc as i32))
+        }
+    }
+
+    #[test]
+    fn a_project_procedure_call_reaches_the_innermost_event_executor() {
+        assert!(call_project_procedure(0, 1, vec![Variant::from_i32(4)]).is_none());
+        let mut executor = Doubler;
+        // SAFETY: the executor outlives the scope and is not used while the scope is live.
+        let scope =
+            unsafe { ExecutorScope::enter(NonNull::from(&mut executor as &mut dyn EventExecutor)) };
+        let value = call_project_procedure(2, 3, vec![Variant::from_i32(4)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(value.as_i32(), Some(13));
+        let fault = call_project_procedure(2, 9, vec![Variant::from_i32(4)])
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(fault.number, 11);
+        drop(scope);
+        assert!(call_project_procedure(0, 1, vec![Variant::from_i32(4)]).is_none());
+    }
 }

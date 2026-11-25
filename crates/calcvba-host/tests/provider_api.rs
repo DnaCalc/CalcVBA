@@ -165,3 +165,26 @@ fn debugger_and_codegen_restrictions_select_vm3_before_compilation() {
         ));
     }
 }
+
+#[test]
+fn a_reentrant_call_outside_a_running_procedure_is_a_reentry_error() {
+    let source = "Public Function Twice(ByVal n As Long) As Long\nTwice = n * 2\nEnd Function\n";
+    for backend in [
+        calcvba_host::Backend::Interpreter,
+        calcvba_host::Backend::Jit,
+    ] {
+        let module = calcvba_host::Module::load("Api", source).unwrap();
+        let session = module.prepare(backend).unwrap();
+        let twice = session
+            .bind("Api", "Twice", calcvba_host::ProcedureKind::Function)
+            .unwrap();
+        assert!(matches!(
+            session.call_bound_reentrant(&twice, &[calcvba_runtime::Variant::from_i32(4)]),
+            Err(calcvba_host::Error::Reentry)
+        ));
+        assert!(matches!(
+            session.call_bound_reentrant(&twice, &[]),
+            Err(calcvba_host::Error::ArgumentMismatch)
+        ));
+    }
+}

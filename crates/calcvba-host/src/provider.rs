@@ -639,6 +639,16 @@ impl api::Session for Session {
             .call_bound(handle, args, max_steps)
             .map_err(error)
     }
+    fn call_bound_reentrant(
+        &self,
+        handle: &api::BoundProcedure,
+        args: &[api::Variant],
+    ) -> Result<api::Variant, api::Error> {
+        let handle = dynamic_bound(handle)?;
+        self.session
+            .call_bound_reentrant(handle, args)
+            .map_err(error)
+    }
     fn bind_slots(
         &self,
         module: &str,

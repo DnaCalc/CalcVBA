@@ -1036,6 +1036,51 @@ impl<'h> Vm3<'h> {
         outcome.map(|()| value)
     }
 
+    /// A reentrant dynamic call: run procedure `func` of linked unit `unit` (no hidden receiver)
+    /// with prepared value arguments while this VM is suspended inside a host call. The frames,
+    /// globals and Err state are the running procedure's own; a Function's value is returned, a
+    /// Sub's is Empty.
+    fn call_project_procedure_values(
+        &mut self,
+        unit: usize,
+        func: FuncId,
+        args: Vec<Variant>,
+    ) -> Result<Variant, Vm3Error> {
+        self.guard_call_depth()?;
+        let target = self
+            .exec
+            .programs
+            .get(unit)
+            .and_then(|loaded| loaded.program.funcs.get(func.0))
+            .ok_or_else(|| Vm3Error::Malformed("function index out of range".into()))?;
+        if target.param_count != args.len() {
+            return Err(Vm3Error::Malformed(
+                "function invocation signature mismatch".into(),
+            ));
+        }
+        let base = self.frames.len();
+        let mut frame = self.new_frame_in(unit, func)?;
+        for (i, value) in args.into_iter().enumerate() {
+            if let Some(slot) = frame.local_mut(i) {
+                *slot = value;
+            }
+        }
+        let saved = self.exec.err_engine.enter_activation();
+        frame.saved_error_mode = saved.error_mode;
+        frame.saved_active_error = saved.active_error;
+        self.frames.push(frame);
+        let outcome = self.run_loop(base);
+        let value = self
+            .frames
+            .get(base)
+            .and_then(|frame| frame.return_local.and_then(|id| frame.local(id.0).cloned()))
+            .unwrap_or_else(Variant::empty);
+        self.exec.err_engine.restore(saved);
+        self.truncate_frames_with_withevents_cleanup(base);
+        self.prune_param_array_aliases_from_depth(base);
+        outcome.map(|()| value)
+    }
+
     /// The universal value route adapts exact scalar values to the same unboxed
     /// primary interpreter used by typed hosts. No source/name reconstruction.
     fn invoke_scalar_values(
@@ -8952,6 +8997,44 @@ impl calcvba_runtime::events::EventExecutor for Vm3<'_> {
                     .pending_abort
                     .get_or_insert(calcvba_rt_abi::RunAbort::Fault(fault));
                 Err(reported)
+            }
+        }
+    }
+
+    fn call_project_procedure(
+        &mut self,
+        unit: usize,
+        proc: usize,
+        args: Vec<Variant>,
+    ) -> Result<Variant, calcvba_runtime::events::MemberFault> {
+        let saved_cur = self.cur;
+        let outcome = self.call_project_procedure_values(unit, FuncId(proc), args);
+        self.cur = saved_cur;
+        match outcome {
+            Ok(value) => Ok(value),
+            Err(Vm3Error::Halted) => {
+                self.exec
+                    .events
+                    .pending_abort
+                    .get_or_insert(calcvba_rt_abi::RunAbort::End);
+                Ok(Variant::empty())
+            }
+            Err(Vm3Error::BudgetExceeded) => {
+                Err(calcvba_runtime::events::MemberFault::from_number(28))
+            }
+            Err(error) => {
+                let fault = match error {
+                    Vm3Error::Fault(fault) | Vm3Error::EventAbort(fault) => fault,
+                    other => Fault::new(51, other.to_string()),
+                };
+                self.exec.err_engine.pending_fault = None;
+                Err(calcvba_runtime::events::MemberFault {
+                    number: fault.code,
+                    description: fault.message,
+                    source: fault.source.unwrap_or_default(),
+                    help_file: fault.help_file.unwrap_or_default(),
+                    help_context: fault.help_context.unwrap_or(0),
+                })
             }
         }
     }

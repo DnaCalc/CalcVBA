@@ -4098,6 +4098,115 @@ pub(crate) unsafe fn invoke_project_member_with_me(
     Ok(return_value.unwrap_or_else(Variant::empty))
 }
 
+/// A reentrant dynamic call of a Sub or Function with no hidden receiver (`Application.Run`
+/// from a running procedure): the callee gets a frame above the running procedure's, with
+/// `args` as its leading locals, and the Function's value comes back.
+// SAFETY CONTRACT: `state` and `run` must be the exact live, uniquely borrowed, same-thread
+// roots of the running JIT run, suspended inside a host call with no borrow of either held.
+pub(crate) unsafe fn invoke_project_procedure_values(
+    run: *mut JitRun,
+    state: *mut RawExecState,
+    program_index: usize,
+    proc: usize,
+    args: &[Variant],
+) -> Result<Variant, i32> {
+    if run.is_null() {
+        return Err(ST_FAULT);
+    }
+    let (image, return_local, frame) = {
+        // SAFETY: null was rejected. This preparation borrow ends before compiled entry.
+        let run_ref = unsafe { &mut *run };
+        let Some(image) = program_image(run_ref, program_index) else {
+            return Err(ST_FAULT);
+        };
+        if image.program.is_null() || image.functions.is_null() || proc >= image.function_count {
+            return Err(ST_FAULT);
+        }
+        // SAFETY: installed from the owning CompiledImage for this run.
+        let program = unsafe { &*image.program };
+        let Some(func) = program.funcs.get(proc) else {
+            return Err(ST_FAULT);
+        };
+        if func.param_count != args.len() {
+            return Err(ST_FAULT);
+        }
+        let return_local = if let Some(ret) = func.return_local {
+            let Some(ret_ty) = func.locals.get(ret.0).map(|local| local.ty.clone()) else {
+                return Err(ST_FAULT);
+            };
+            if !is_jit_static_call_ty(&ret_ty) {
+                return Err(ST_FAULT);
+            }
+            Some((ret.0, ret_ty))
+        } else {
+            None
+        };
+        if run_ref.frames.len() >= MAX_JIT_FRAMES {
+            // SAFETY: the enclosing JIT boundary validated the live execution state.
+            return Err(unsafe { rt_raise_out_of_stack(state) });
+        }
+        let mut frame = new_jit_frame(program, program_index, func).map_err(|_| ST_FAULT)?;
+        for (slot, value) in frame.locals.iter_mut().zip(args) {
+            *slot = value.clone();
+        }
+        (image, return_local, frame)
+    };
+    let mut saved_err = RtSavedErrState::default();
+    // SAFETY: the enclosing JIT boundary validated the live state; saved-error storage is
+    // initialized and live for this call.
+    let enter_status = unsafe { rt_err_enter_activation(state, &mut saved_err) };
+    if enter_status != ST_OK {
+        return Err(enter_status);
+    }
+    {
+        // SAFETY: error activation completed and this push borrow ends before entry.
+        unsafe { &mut *run }.frames.push(frame);
+    }
+    // SAFETY: function pointer bounds were checked above.
+    let entry = unsafe { *image.functions.add(proc) };
+    // SAFETY: entry uses the JIT ABI and the stable raw run root/state remain live.
+    let status = unsafe { entry(run, state) };
+    let (return_value, cleanup_status) = {
+        // SAFETY: entry returned; no typed run borrow spans it.
+        let run_ref = unsafe { &mut *run };
+        let return_value = if status == ST_OK {
+            return_local.as_ref().and_then(|(local, ty)| {
+                run_ref
+                    .frames
+                    .last()
+                    .and_then(|frame| frame.locals.get(*local))
+                    .and_then(|value| call_return_variant(ty, value))
+            })
+        } else {
+            None
+        };
+        let Some(frame) = run_ref.frames.pop() else {
+            // SAFETY: the activation was entered successfully and state remains live.
+            let restore_status = unsafe { rt_err_restore_activation(state, &saved_err) };
+            return Err(if restore_status == ST_OK {
+                ST_FAULT
+            } else {
+                restore_status
+            });
+        };
+        // SAFETY: post-entry cleanup owns the bounded run borrow.
+        let cleanup_status = unsafe { after_jit_frame_pop(run_ref, state, &frame) };
+        (return_value, cleanup_status)
+    };
+    // SAFETY: as for the enter call above.
+    let restore_status = unsafe { rt_err_restore_activation(state, &saved_err) };
+    if restore_status != ST_OK {
+        return Err(restore_status);
+    }
+    if cleanup_status != ST_OK {
+        return Err(cleanup_status);
+    }
+    if status != ST_OK {
+        return Err(status);
+    }
+    Ok(return_value.unwrap_or_else(Variant::empty))
+}
+
 // SAFETY CONTRACT: `state` must be null or the exact live, uniquely borrowed,
 // same-thread handle produced by `exec_state_as_raw`; any additional raw pointer
 // and length arguments must identify the initialized, nonaliasing storage described

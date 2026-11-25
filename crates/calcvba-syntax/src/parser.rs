@@ -802,7 +802,7 @@ impl<'a> Parser<'a> {
     /// list and silently dropped every following item.
     fn parse_bare_arg_list(&mut self, allow_semicolon: bool) {
         self.eat_expr_whitespace();
-        if self.is_expr_stop(self.current()) {
+        if self.is_expr_stop(self.current()) && !self.at_named_arg() {
             return;
         }
         let is_separator =
@@ -826,10 +826,11 @@ impl<'a> Parser<'a> {
             }
             self.bump(); // , or ;
             self.eat_expr_whitespace();
-            if !allow_semicolon && self.is_expr_stop(self.current()) {
+            let named = self.at_named_arg();
+            if !allow_semicolon && self.is_expr_stop(self.current()) && !named {
                 self.error("expected argument after `,`".into());
             }
-            if !self.is_expr_stop(self.current()) && !is_separator(self) {
+            if (!self.is_expr_stop(self.current()) || named) && !is_separator(self) {
                 self.parse_bare_arg();
             }
         }
@@ -887,6 +888,12 @@ impl<'a> Parser<'a> {
                 self.parse_expr_bp(0);
             }
         }
+    }
+
+    /// A named argument `Name:=` whose name is a keyword such as `To` or `Step`
+    /// (`PrintOut From:=1, To:=2`) is an argument, not the end of the list.
+    fn at_named_arg(&self) -> bool {
+        (self.at(SyntaxKind::Ident) || self.current().is_keyword()) && self.peek_is_colon_eq()
     }
 
     /// Check if the next non-trivia token after current is ColonEq.

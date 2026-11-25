@@ -11,6 +11,7 @@ use calcvba_bundle::native::NativeImplId;
 use calcvba_bundle::{
     AssignmentIntent, BundleImport, ExportToken, NumericMode, ProjectMemberKind, StringCompareMode,
 };
+use calcvba_com::typelib::TypeLibMemberInvokeKind;
 use calcvba_com::{OptionalParamDefault, TypeLibMemberMetadata, TypeLibParamType, TypeLibWireType};
 use calcvba_symbol::binding::{Binding, DispatchRoute, SpecialForm};
 use calcvba_symbol::model::{
@@ -1886,6 +1887,19 @@ impl<'a> ProcLower<'a> {
                 self.late_default_member_call(kind, recv, args),
             )]));
         }
+        // A global library function (`Range("B2") = 50`, `Cells(1, 1) = x`): the call
+        // returns an object and the assignment is a Let of that object's default member.
+        if matches!(
+            binding.route,
+            DispatchRoute::ComMember { .. }
+                | DispatchRoute::AppObjectMember { .. }
+                | DispatchRoute::ExternMember {
+                    has_receiver: false,
+                    ..
+                }
+        ) {
+            return self.bind_call_result_default_let(target, kind, rhs);
+        }
         if !matches!(
             binding.route,
             DispatchRoute::ProjectMember {
@@ -1984,10 +1998,20 @@ impl<'a> ProcLower<'a> {
                     DispatchRoute::ComMember {
                         interface_name,
                         member: com_member,
+                        invoke_kind: found_kind,
                         ..
                     },
                 ..
             }) => {
+                // The member found is a read-only call (`rng.Offset(1, 0) = 9`): the call
+                // returns an object and the assignment is a Let of its default member.
+                if matches!(
+                    found_kind,
+                    TypeLibMemberInvokeKind::PropertyGet | TypeLibMemberInvokeKind::Method
+                ) && let Some(stmts) = self.bind_call_result_default_let(target, kind, rhs)?
+                {
+                    return Ok(Some(stmts));
+                }
                 let mut args = self.bind_com_property_put_index_args(arglist, &com_member)?;
                 args.push(CoreArg::ByVal(rhs.clone()));
                 Ok(Some(vec![CoreStmt::Eval(self.early_com_call(
@@ -2072,9 +2096,44 @@ impl<'a> ProcLower<'a> {
                     self.late_member_call(member, kind, recv.value, args),
                 )]))
             }
+            // A read-only COM call (`rng.Offset(1, 0) = 9`, no put accessor): the call
+            // returns an object and the assignment is a Let of its default member.
+            None if matches!(
+                self.resolve_member(&recv.ty, member, Some(ProjectMemberKind::PropertyGet)),
+                Some(Binding {
+                    route: DispatchRoute::ComMember { .. },
+                    ..
+                })
+            ) =>
+            {
+                self.bind_call_result_default_let(target, kind, rhs)
+            }
             // A project member or a plain field/method member → a place store path.
             _ => Ok(None),
         }
+    }
+
+    /// `f(args) = rhs` where `f` is a library function or method returning an object:
+    /// a Let of the returned object's default member (`Range("B2") = 50` sets `.Value`).
+    /// `None` when the call does not produce an object or Variant, or for a Set.
+    fn bind_call_result_default_let(
+        &mut self,
+        target: SyntaxNode<'_>,
+        kind: ProjectMemberKind,
+        rhs: &CoreValue,
+    ) -> Result<Option<Vec<CoreStmt>>, BindError> {
+        if kind != ProjectMemberKind::PropertyLet {
+            return Ok(None);
+        }
+        let call = self.bind_expr(target)?;
+        if !matches!(call.ty, VarTypeRef::Object(_) | VarTypeRef::Variant) {
+            return Ok(None);
+        }
+        Ok(Some(vec![CoreStmt::Eval(self.late_default_member_call(
+            kind,
+            call.value,
+            vec![CoreArg::ByVal(rhs.clone())],
+        ))]))
     }
 
     /// `v(index…) = rhs` where `v` is a non-array Variant (a local, a module variable or an

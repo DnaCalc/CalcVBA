@@ -87,7 +87,8 @@ Sub Main()
     result = "unreachable"
 End Sub
 "#;
-    assert_bind_rejected_with(source, &["Sub or Function not defined"]);
+    // The compile error names the procedure, so a project refusal can be traced to its cause.
+    assert_bind_rejected_with(source, &["Sub or Function not defined: MissingProc"]);
 }
 
 #[test]

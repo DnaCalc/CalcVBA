@@ -104,7 +104,8 @@ pub trait EventExecutor {
 
 #[derive(Clone, Copy)]
 enum ActiveExecutor {
-    Event(NonNull<dyn EventExecutor>),
+    /// An event executor and the object owner (session) whose run it is.
+    Event(NonNull<dyn EventExecutor>, u64),
     Member(NonNull<dyn MemberInvoker>),
 }
 
@@ -131,7 +132,10 @@ impl ExecutorScope {
         let executor: NonNull<dyn EventExecutor> = unsafe { core::mem::transmute(executor) };
         EXECUTORS.with(|stack| {
             let mut stack = stack.borrow_mut();
-            stack.push(ActiveExecutor::Event(executor));
+            stack.push(ActiveExecutor::Event(
+                executor,
+                crate::object_owner::RuntimeObjectOwner::current().id(),
+            ));
             Self { depth: stack.len() }
         })
     }
@@ -184,7 +188,7 @@ impl Drop for MemberInvokerScope {
 pub fn deliver(key: u64, dispid: i32, args: &[Variant]) -> Result<bool, EventFault> {
     let executor = EXECUTORS.with(|stack| {
         stack.borrow().iter().rev().find_map(|entry| match *entry {
-            ActiveExecutor::Event(executor) => Some(executor),
+            ActiveExecutor::Event(executor, _) => Some(executor),
             ActiveExecutor::Member(_) => None,
         })
     });
@@ -208,7 +212,7 @@ pub fn invoke_member(
 ) -> Option<Result<Variant, MemberFault>> {
     let active = EXECUTORS.with(|stack| stack.borrow().last().copied())?;
     Some(match active {
-        ActiveExecutor::Event(executor) => {
+        ActiveExecutor::Event(executor, _) => {
             // SAFETY: registered via `ExecutorScope::enter`; valid and unborrowed across the call.
             unsafe {
                 (*executor.as_ptr()).invoke_member(object, member, invoke_kind, args, aliases)
@@ -230,12 +234,32 @@ pub fn call_project_procedure(
 ) -> Option<Result<Variant, MemberFault>> {
     let executor = EXECUTORS.with(|stack| {
         stack.borrow().iter().rev().find_map(|entry| match *entry {
-            ActiveExecutor::Event(executor) => Some(executor),
+            ActiveExecutor::Event(executor, _) => Some(executor),
             ActiveExecutor::Member(_) => None,
         })
     })?;
     // SAFETY: as for `deliver`: the registered executor is valid and unused by its owner while its
     // host call runs, and no borrow of the stack is held across the call.
+    Some(unsafe { (*executor.as_ptr()).call_project_procedure(unit, proc, args) })
+}
+
+/// [`call_project_procedure`] on the innermost run of the session whose object owner is `owner`:
+/// the reentrant call of a procedure of that session, while a procedure of it is inside a host call
+/// further up the stack (another session's run may be above it). `None` when no run of that
+/// session is active on this thread.
+pub fn call_project_procedure_for(
+    owner: u64,
+    unit: usize,
+    proc: usize,
+    args: Vec<Variant>,
+) -> Option<Result<Variant, MemberFault>> {
+    let executor = EXECUTORS.with(|stack| {
+        stack.borrow().iter().rev().find_map(|entry| match *entry {
+            ActiveExecutor::Event(executor, id) if id == owner => Some(executor),
+            _ => None,
+        })
+    })?;
+    // SAFETY: as for `call_project_procedure`.
     Some(unsafe { (*executor.as_ptr()).call_project_procedure(unit, proc, args) })
 }
 
@@ -245,7 +269,7 @@ pub fn has_executor() -> bool {
         stack
             .borrow()
             .iter()
-            .any(|entry| matches!(entry, ActiveExecutor::Event(_)))
+            .any(|entry| matches!(entry, ActiveExecutor::Event(..)))
     })
 }
 

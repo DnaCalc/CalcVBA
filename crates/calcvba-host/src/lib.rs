@@ -1161,7 +1161,12 @@ impl<'a> Session<'a> {
             return Err(Error::ArgumentMismatch);
         }
         let unit = self.module.programs().len() - 1;
-        match calcvba_runtime::events::call_project_procedure(unit, handle.id.0, args.to_vec()) {
+        match calcvba_runtime::events::call_project_procedure_for(
+            self.object_owner.borrow().id(),
+            unit,
+            handle.id.0,
+            args.to_vec(),
+        ) {
             None => Err(Error::Reentry),
             Some(Ok(value)) => Ok(value),
             Some(Err(fault)) => Err(Error::Runtime {

@@ -2098,13 +2098,20 @@ impl<'a> ProcLower<'a> {
             }
             // A read-only COM call (`rng.Offset(1, 0) = 9`, no put accessor): the call
             // returns an object and the assignment is a Let of its default member.
-            None if matches!(
-                self.resolve_member(&recv.ty, member, Some(ProjectMemberKind::PropertyGet)),
-                Some(Binding {
-                    route: DispatchRoute::ComMember { .. },
-                    ..
-                })
-            ) =>
+            None if {
+                let read = self.document_member_receiver(
+                    recv.clone(),
+                    member,
+                    Some(ProjectMemberKind::PropertyGet),
+                );
+                matches!(
+                    self.resolve_member(&read.ty, member, Some(ProjectMemberKind::PropertyGet)),
+                    Some(Binding {
+                        route: DispatchRoute::ComMember { .. },
+                        ..
+                    })
+                )
+            } =>
             {
                 self.bind_call_result_default_let(target, kind, rhs)
             }

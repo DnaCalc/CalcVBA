@@ -144,3 +144,17 @@ End Sub
 "#;
     assert_bind_rejected_with(source, &["Variable not defined"]);
 }
+
+/// dc-cmruz: a name an earlier assignment declared implicitly is a variable, so indexing it
+/// (`a(1)`) is an array subscript, not a call of an undefined procedure.
+#[test]
+fn implicit_variable_assigned_earlier_can_be_indexed() {
+    let source = r#"
+Public result As String
+Sub Main()
+    a = Array(10, 20, 30)
+    result = CStr(a(1)) & ":" & CStr(UBound(a)) & ":" & CStr(Mid(a(2), 1, 1))
+End Sub
+"#;
+    assert_eq!(first(source), s("20:2:3"));
+}

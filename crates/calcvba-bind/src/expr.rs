@@ -441,6 +441,9 @@ impl<'a> ProcLower<'a> {
                         return self.bind_call_route(tok.text, &binding, node.index_arg_list());
                     }
                 }
+                // A name an earlier assignment declared implicitly (no Option Explicit) is a
+                // variable: `a = Array(1): x = a(1)` indexes it.
+                None if self.is_implicit_local(tok.text) => {}
                 None => {
                     return Err(self.unresolved(tok.text, "call statement"));
                 }

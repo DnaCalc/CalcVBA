@@ -1586,6 +1586,14 @@ impl<'a> ProcLower<'a> {
     /// ordinary unresolved variable name is used, typed by the module's Def*
     /// directives or Variant by default. `Option Explicit` turns the same use
     /// into the compile diagnostic "Variable not defined".
+    /// True when `name` was already declared implicitly in this procedure (no `Option Explicit`).
+    fn is_implicit_local(&self, name: &str) -> bool {
+        !self.info.option_explicit
+            && self
+                .implicit_local_of
+                .contains_key(&fold_identifier(unbracket_identifier(name)))
+    }
+
     fn implicit_local(&mut self, name: &str) -> Result<(CorePlace, VarTypeRef), BindError> {
         let display = unbracket_identifier(name).to_string();
         if self.has_ambiguous_unqualified_name(&display) {

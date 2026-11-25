@@ -363,6 +363,7 @@ fn application_blob() -> TypeLibMetadataBlob {
         ],
         events: Vec::new(),
         coclass_names: vec!["Application".into()],
+        enum_type_names: Vec::new(),
         coclass_prog_ids: Vec::new(),
         app_objects: Vec::new(),
         extensible: false,

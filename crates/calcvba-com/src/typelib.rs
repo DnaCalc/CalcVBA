@@ -51,6 +51,10 @@ pub struct TypeLibMetadataBlob {
     /// could not resolve. The symbol provider owns `<reference_name>.<coclass>` for each
     /// of these, so every coclass in the referenced library is bindable by name.
     pub coclass_names: Vec<String>,
+    /// The ENUM type names this typelib defines (`XlCalculation`, ...). A variable declared
+    /// `As XlCalculation` holds a Long, as in VBA; without the name the binder takes the
+    /// declaration for an object type.
+    pub enum_type_names: Vec<String>,
     /// Registered activation names read from each coclass's CLSID. A typelib
     /// namespace (or a source reference alias) need not equal its ProgID prefix.
     pub coclass_prog_ids: Vec<(String, String)>,
@@ -1251,6 +1255,7 @@ mod tests {
             ],
             events: Vec::new(),
             coclass_names: Vec::new(),
+            enum_type_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
             app_objects: Vec::new(),
             extensible: false,

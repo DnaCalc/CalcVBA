@@ -950,6 +950,7 @@ fn widget_blob() -> TypeLibMetadataBlob {
             coclass: None,
         }],
         coclass_names: Vec::new(),
+        enum_type_names: Vec::new(),
         coclass_prog_ids: Vec::new(),
         app_objects: Vec::new(),
         extensible: false,
@@ -1174,6 +1175,17 @@ fn library_level_coclass_resolves_bare_and_qualified_names() {
             .is_none()
     );
     assert_eq!(provider.resolve_coclass("Scripting.Nope"), None);
+}
+
+#[test]
+fn a_typelib_enum_type_name_is_known_bare_and_library_qualified() {
+    let mut blob = widget_blob();
+    blob.identity.reference_name = "Excel".into();
+    blob.enum_type_names = vec!["XlCalculation".into()];
+    let provider = ComTypeLibProvider::new(blob);
+    let mut aliases = provider.enum_type_aliases();
+    aliases.sort();
+    assert_eq!(aliases, ["excel.xlcalculation", "xlcalculation"]);
 }
 
 struct ExcelHostTypeLibs;

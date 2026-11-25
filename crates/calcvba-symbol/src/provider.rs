@@ -1889,6 +1889,10 @@ pub fn build_resolution_environment_with_project_surfaces(
     }
     providers.push(Box::new(VbaLibraryProvider));
     providers.push(Box::new(HostProvider::from_providers(host_blobs)));
+    let com_enum_aliases: Vec<String> = com_providers
+        .iter()
+        .flat_map(|com| com.enum_type_aliases())
+        .collect();
     for com in com_providers {
         providers.push(Box::new(com));
     }
@@ -1897,6 +1901,10 @@ pub fn build_resolution_environment_with_project_surfaces(
         .iter()
         .map(|surface| fold_identifier(&surface.project_name))
         .collect();
+    let mut enum_types = type_index.enum_types;
+    for com in &com_enum_aliases {
+        enum_types.insert(com.clone());
+    }
 
     Ok(ResolutionEnvironment {
         symbols,
@@ -1910,7 +1918,7 @@ pub fn build_resolution_environment_with_project_surfaces(
         udt_fields: type_index.udt_fields,
         canonical_udts: type_index.canonical_udts,
         udt_display_names: type_index.udt_display_names,
-        enum_types: type_index.enum_types,
+        enum_types,
         ambiguous_type_names,
         external_project_names,
     })

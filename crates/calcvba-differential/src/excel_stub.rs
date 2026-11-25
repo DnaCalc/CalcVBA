@@ -633,6 +633,7 @@ fn excel_blob(coclass: Option<&str>) -> TypeLibMetadataBlob {
         members,
         events: Vec::new(),
         coclass_names,
+        enum_type_names: Vec::new(),
         coclass_prog_ids: Vec::new(),
         app_objects,
         extensible: coclass.is_some(),

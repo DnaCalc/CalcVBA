@@ -1033,6 +1033,7 @@ impl TypeLibResolver for Libraries<'_> {
             members,
             events: vec![],
             coclass_names: library.interfaces.iter().map(|i| i.name.clone()).collect(),
+            enum_type_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
             app_objects: Vec::new(),
             extensible: false,

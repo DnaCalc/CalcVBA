@@ -87,6 +87,7 @@ impl calcvba_symbol::TypeLibResolver for Types {
             members,
             events: vec![],
             coclass_names: vec!["Native".into()],
+            enum_type_names: Vec::new(),
             coclass_prog_ids: Vec::new(),
             app_objects: Vec::new(),
             extensible: false,

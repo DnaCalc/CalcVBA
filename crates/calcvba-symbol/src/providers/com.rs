@@ -67,6 +67,19 @@ impl ComTypeLibProvider {
         };
         Some(Binding::new(None, DispatchRoute::ConstValue(value)))
     }
+    /// Folded names a declaration may use for this library's enum types (`xlcalculation`,
+    /// `excel.xlcalculation`). Such a type is a Long, as in VBA.
+    pub(crate) fn enum_type_aliases(&self) -> Vec<String> {
+        let reference = fold_identifier(&self.blob.identity.reference_name);
+        self.blob
+            .enum_type_names
+            .iter()
+            .flat_map(|name| {
+                let folded = fold_identifier(name);
+                [format!("{reference}.{folded}"), folded]
+            })
+            .collect()
+    }
     pub fn new(blob: TypeLibMetadataBlob) -> Self {
         let iid = blob
             .members

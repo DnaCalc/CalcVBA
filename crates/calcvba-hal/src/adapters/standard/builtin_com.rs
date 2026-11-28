@@ -85,6 +85,21 @@ impl BuiltinObject {
         use DynamicCallKind::{PropertyLet, PropertySet};
         let put = matches!(kind, Some(PropertyLet | PropertySet));
         match self {
+            Self::FileSystem if !put && matches!(member, "getfilename" | "getextensionname") => {
+                let extension = member == "getextensionname";
+                let parameter = if extension { "path" } else { "pathspec" };
+                let path = variant_to_vba_string(argument(host, args, parameter)?)
+                    .map_err(|_| fault(host, 13))?;
+                let name = windows_file_name(path.payload_units());
+                let result = if extension {
+                    name.iter()
+                        .rposition(|&unit| unit == u16::from(b'.'))
+                        .map_or(&[][..], |dot| &name[dot + 1..])
+                } else {
+                    name
+                };
+                Ok(Variant::from_utf16_units(result))
+            }
             Self::FileSystem if !put && matches!(member, "fileexists" | "folderexists") => {
                 let file = member == "fileexists";
                 let name = if file { "filespec" } else { "folderspec" };
@@ -142,6 +157,21 @@ impl BuiltinObject {
             _ => Err(fault(host, 438)),
         }
     }
+}
+
+fn windows_file_name(path: &[u16]) -> &[u16] {
+    let path = match path {
+        [drive, colon, rest @ ..]
+            if u8::try_from(*drive).is_ok_and(|letter| letter.is_ascii_alphabetic())
+                && *colon == u16::from(b':') =>
+        {
+            rest
+        }
+        _ => path,
+    };
+    path.rsplit(|&unit| unit == u16::from(b'\\') || unit == u16::from(b'/'))
+        .next()
+        .unwrap_or_default()
 }
 
 fn argument<'a>(

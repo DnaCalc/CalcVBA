@@ -85,3 +85,12 @@ fn browser_report_refuses_dom_document_without_a_com_adapter() {
         );
     }
 }
+
+#[test]
+fn faithful_file_system_path_helpers_use_windows_text_without_a_file() {
+    assert_probe(
+        "fso-path-names",
+        include_str!("fixtures/portable-fso-path-names.bas"),
+        "Missing.tar.GZ|GZ|||Leaf.log",
+    );
+}

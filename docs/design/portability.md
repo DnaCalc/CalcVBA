@@ -183,6 +183,8 @@ On a non-Windows native host, `HostPolicy::windows_faithful` enables faithful ru
 
 Off Windows, the faithful `Environ` table supplies the Windows persona. It reads user and machine identity from the host and resolves file-related aliases through configured mounts. Other host variables require an entry in `HostPolicy::windows_environment_passthrough` or a CLI `--pass-env NAME` option. Repeat the option to set the order of forwarded entries before synthesized entries. Names are matched case-insensitively in VBA, and indexed lookups are one-based. A reverse path must resolve back to the same host location, including when one mount shadows a directory in another mount.
 
+The portable `Scripting.FileSystemObject` implements `GetFileName` and `GetExtensionName` over the Windows path string. The methods preserve UTF-16 text and work with names that refer to absent files. [GetFileName](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/getfilename-method-visual-basic-for-applications) and [GetExtensionName](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/getextensionname-method).
+
 ## 6. Shims and models
 
 | Shim or model | Hosts | Design |

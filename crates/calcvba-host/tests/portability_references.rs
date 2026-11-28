@@ -79,3 +79,64 @@ End Sub
         );
     }
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn faithful_session_refuses_unqualified_types_and_reads_of_affected_globals() {
+    use calcvba_host::portability::Mode;
+    use calcvba_host_api::RuntimeProvider;
+
+    let mut project = api::Project::module(
+        "Main",
+        r#"Option Explicit
+Public widget As New MissingControls.Widget
+Private entered As Long
+Public Function Answer() As Long
+    Answer = 42 + entered
+End Function
+Public Sub LocalType()
+    Dim button As Widget
+    entered = 1
+End Sub
+Public Sub GlobalType()
+    entered = 2
+    Set Main.widget = Nothing
+End Sub
+Public Sub LocalObject()
+    Dim widget As Collection
+    Set widget = New Collection
+    entered = widget.Count
+End Sub
+"#,
+    );
+    project.references = ["MissingControls", "MissingTools"]
+        .into_iter()
+        .map(api::TypeLibraryReference::named)
+        .collect();
+    let provider = Provider::default().with_portability_mode(Mode::WindowsFaithful);
+    for backend in [api::Backend::Interpreter, api::Backend::Jit] {
+        let session = provider.load(&project, backend, api::HOST_API_ABI).unwrap();
+        for (procedure, expected) in [("LocalType", "widget"), ("GlobalType", "MissingControls")] {
+            let bound = session
+                .bind("Main", procedure, api::ProcedureKind::Sub)
+                .unwrap();
+            let error = session.call_bound(&bound, &[], 10_000).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+            if procedure == "LocalType" {
+                assert!(error.to_string().contains("MissingControls"), "{error}");
+                assert!(error.to_string().contains("MissingTools"), "{error}");
+            }
+        }
+        let local = session
+            .bind("Main", "LocalObject", api::ProcedureKind::Sub)
+            .unwrap();
+        session.call_bound(&local, &[], 10_000).unwrap();
+        let answer = session
+            .bind("Main", "Answer", api::ProcedureKind::Function)
+            .unwrap();
+        assert_eq!(
+            session.call_bound(&answer, &[], 10_000).unwrap(),
+            api::Variant::from_i32(42)
+        );
+    }
+}

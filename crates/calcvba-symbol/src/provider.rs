@@ -379,30 +379,55 @@ impl ResolutionEnvironment {
             .any(|provider| provider.is_known_object_type(type_name))
     }
 
-    /// The explicitly qualified, unresolved library a declaration or New uses.
-    /// An unqualified type gives no evidence of which missing library owns it.
-    pub fn unavailable_type_library_in(&self, node: SyntaxNode<'_>) -> Option<&str> {
-        if self.unavailable_type_libraries.is_empty() {
+    pub fn has_unavailable_type_libraries(&self) -> bool {
+        !self.unavailable_type_libraries.is_empty()
+    }
+
+    /// A declared type or activation target that failed to resolve with an
+    /// unavailable reference. An unqualified name cannot identify its owner.
+    pub fn unavailable_type_library_for(&self, ty: &VarTypeRef) -> Option<String> {
+        let name = match ty {
+            VarTypeRef::Array(element) | VarTypeRef::FixedArray { element, .. } => {
+                return self.unavailable_type_library_for(element);
+            }
+            VarTypeRef::Object(name) => name,
+            _ => return None,
+        };
+        if self.unavailable_type_libraries.is_empty()
+            || ["object", "iunknown", "idispatch", "any"]
+                .iter()
+                .any(|builtin| name.eq_ignore_ascii_case(builtin))
+            || self.is_known_object_type(name)
+            || self.resolve_extern_class_identity(name).is_some()
+            || self.is_udt(name)
+            || self.is_enum_type(name)
+        {
             return None;
         }
-        let kind = node.kind();
-        if matches!(kind, SyntaxKind::TypeRef | SyntaxKind::NewExpr) {
-            let name = type_ref_name(node);
-            if let Some((library, _)) = name.split_once('.')
-                && let Some(unavailable) = self
-                    .unavailable_type_libraries
-                    .iter()
-                    .find(|unavailable| unavailable.eq_ignore_ascii_case(library))
-                && !self.is_known_object_type(&name)
-                && !self.is_udt(&name)
-                && !self.is_enum_type(&name)
-            {
-                return Some(unavailable);
-            }
+        let local_name = match name.split_once('.') {
+            Some((project, class)) if self.is_project_name(project) => Some(class),
+            Some(_) => None,
+            None => Some(name.as_str()),
+        };
+        if local_name.is_some_and(|local_name| {
+            self.modules().any(|module| {
+                matches!(module.module_kind, ModuleKind::Class | ModuleKind::Document)
+                    && module.module_name.eq_ignore_ascii_case(local_name)
+            })
+        }) {
+            return None;
         }
-        node.child_nodes()
-            .into_iter()
-            .find_map(|child| self.unavailable_type_library_in(child))
+        match name.split_once('.') {
+            Some((library, _)) => self
+                .unavailable_type_libraries
+                .iter()
+                .find(|missing| missing.eq_ignore_ascii_case(library))
+                .map(|missing| format!("Type library {missing} is unavailable")),
+            None => Some(format!(
+                "Type {name} cannot be resolved with these type libraries unavailable: {}",
+                self.unavailable_type_libraries.join(", ")
+            )),
+        }
     }
     /// The application object that evaluates an unqualified foreign name `[text]`: the first,
     /// in reference order, whose interface has a `DISPID_EVALUATE` member (Excel's `Global`).

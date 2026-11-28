@@ -34,7 +34,7 @@ impl<'a> Lower<'a> {
         }
     }
 
-    fn proc_lower(&'a self, info: &ProcInfo) -> ProcLower<'a> {
+    pub(crate) fn proc_lower(&'a self, info: &ProcInfo) -> ProcLower<'a> {
         self.lower_with(LowerContext::from_proc(info), info.locals.clone())
     }
 
@@ -80,7 +80,7 @@ impl<'a> Lower<'a> {
     pub(crate) fn static_local_inits(
         &'a self,
         decls: &[SyntaxNode<'a>],
-        unavailable: &[Option<&str>],
+        unavailable: &[Option<String>],
     ) -> Result<Vec<CoreStmt>, BindError> {
         let mut out = Vec::new();
         for ((info, decl), unavailable) in self.ids.procs.iter().zip(decls).zip(unavailable) {
@@ -205,6 +205,32 @@ pub(crate) struct BoundProcBody {
 }
 
 impl<'a> ProcLower<'a> {
+    pub(crate) fn unavailable_type_library_in(&self, node: SyntaxNode<'_>) -> Option<String> {
+        let ty = match node.kind() {
+            SyntaxKind::TypeRef | SyntaxKind::NewExpr => {
+                Some(calcvba_symbol::scanner::type_ref_node(node))
+            }
+            SyntaxKind::IdentExpr => node
+                .ident_name_token()
+                .and_then(|name| self.resolve(name.text))
+                .and_then(|binding| binding.symbol)
+                .map(|symbol| self.symbol_type(symbol)),
+            SyntaxKind::MemberExpr => node
+                .member_name_token()
+                .and_then(|name| self.qualified_namespace_member_binding(node, name.text))
+                .and_then(|binding| binding.symbol)
+                .map(|symbol| self.symbol_type(symbol)),
+            _ => None,
+        };
+        ty.as_ref()
+            .and_then(|ty| self.g.env.unavailable_type_library_for(ty))
+            .or_else(|| {
+                node.child_nodes()
+                    .into_iter()
+                    .find_map(|child| self.unavailable_type_library_in(child))
+            })
+    }
+
     /// The per-instance default record-init statements for this proc, when it is a
     /// class's `Class_Initialize`: one `NewRecord` (recursing into nested scalar-UDT
     /// subfields) per module-level UDT-typed instance field. Empty for any other

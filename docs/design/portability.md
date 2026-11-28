@@ -40,7 +40,7 @@ Finding verdicts use the shared vocabulary `native`, `model`, `host`, `shim`, `r
 
 Procedure statuses are `runs`, `may_stop` and `cannot_run`. `cannot_run` indicates a rejected must-effect. `may_stop` indicates a possible rejection or an unresolved call such as a computed ProgID. Bound effects follow static calls through the project closure and intersect branch effects on normal paths. Procedures with dynamic error control or computed branches can have a conservative may-set and an empty must-set. A source report can retain its findings when bound effects are unavailable.
 
-When the faithful loader cannot resolve a library, procedures with an explicitly qualified declaration or `New` using one of its types refuse on entry and name the library. Other procedures can load and run in the same project.
+When the faithful loader cannot resolve a library, a procedure that declares, creates or accesses a value of an unresolved type refuses before its body runs. A library-qualified type identifies the missing library. An unresolved unqualified type lists the unavailable libraries as candidates because the type has no known owner. Resolved local types and procedures that leave the unavailable types unused can run in the same project.
 
 ## 1. References
 

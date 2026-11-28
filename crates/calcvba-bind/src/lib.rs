@@ -286,6 +286,7 @@ fn bind_one(
         env,
         manifest,
         ids: &ids,
+        mode,
         type_ctx: types::TypeContext::from_target(manifest.conditional_compilation_target),
         imports: RefCell::new(ImportCollector::default()),
         retained_object_names: RefCell::default(),
@@ -304,9 +305,10 @@ fn bind_one(
     }
     let unavailable: Vec<_> = decls
         .iter()
-        .map(|decl| {
-            if mode == Mode::WindowsFaithful {
-                env.unavailable_type_library_in(*decl)
+        .zip(&ids.procs)
+        .map(|(decl, info)| {
+            if mode == Mode::WindowsFaithful && env.has_unavailable_type_libraries() {
+                lower.proc_lower(info).unavailable_type_library_in(*decl)
             } else {
                 None
             }
@@ -314,14 +316,14 @@ fn bind_one(
         .collect();
     let mut procs: Vec<CoreProc> = Vec::with_capacity(ids.procs.len());
     for ((info, decl), unavailable) in ids.procs.iter().zip(&decls).zip(&unavailable) {
-        let bound_body = if let Some(library) = unavailable {
+        let bound_body = if let Some(description) = unavailable {
             proc::BoundProcBody {
                 body: vec![CoreStmt::Error(ErrorOp::Raise {
                     number: CoreValue::Const(CoreConst::I32(429)),
                     source: None,
-                    description: Some(Box::new(CoreValue::Const(CoreConst::Str(format!(
-                        "Type library {library} is unavailable"
-                    ))))),
+                    description: Some(Box::new(CoreValue::Const(CoreConst::Str(
+                        description.clone(),
+                    )))),
                     help_file: None,
                     help_context: None,
                     inherit: false,
@@ -1025,6 +1027,7 @@ struct Lower<'a> {
     env: &'a ResolutionEnvironment,
     manifest: &'a SymbolProjectManifest,
     ids: &'a IdAllocator,
+    mode: Mode,
     type_ctx: types::TypeContext,
     imports: RefCell<ImportCollector>,
     retained_object_names: RefCell<std::collections::BTreeSet<String>>,
@@ -1209,10 +1212,15 @@ impl Lower<'_> {
                     if symbol.kind != SymbolKind::Field {
                         continue;
                     }
-                    let SymbolImpl::DeclaredType(VarTypeRef::Object(type_name)) = &symbol.imp
+                    let SymbolImpl::DeclaredType(ty @ VarTypeRef::Object(type_name)) = &symbol.imp
                     else {
                         continue;
                     };
+                    if self.mode == Mode::WindowsFaithful
+                        && self.env.unavailable_type_library_for(ty).is_some()
+                    {
+                        continue;
+                    }
                     as_new_fields.push(CoreClassAsNewField {
                         field,
                         binding: self.as_new_binding_for_type(type_name)?,

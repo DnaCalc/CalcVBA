@@ -1581,13 +1581,18 @@ impl<'a> ProcLower<'a> {
             // that behavior after `Set x = Nothing`, matching Excel/VBA.
             if declarator.is_new()
                 && let Some(sym) = self.resolve(name.text).and_then(|b| b.symbol)
-                && let calcvba_symbol::signature::VarTypeRef::Object(type_name) =
-                    self.symbol_type(sym)
+                && let ty @ calcvba_symbol::signature::VarTypeRef::Object(type_name) =
+                    &self.symbol_type(sym)
             {
+                if self.g.mode == calcvba_symbol::portability::Mode::WindowsFaithful
+                    && self.g.env.unavailable_type_library_for(ty).is_some()
+                {
+                    continue;
+                }
                 let place = self.place_by_name(name.text)?;
                 out.push(CoreStmt::AsNew {
                     place,
-                    binding: self.as_new_binding_for_type(&type_name)?,
+                    binding: self.as_new_binding_for_type(type_name)?,
                 });
                 continue; // an As-New object is neither an array nor a UDT value.
             }

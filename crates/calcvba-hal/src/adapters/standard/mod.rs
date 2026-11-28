@@ -38,6 +38,8 @@ mod time;
 mod ui;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod win32_declare;
+#[cfg(target_os = "linux")]
+mod windows_attributes;
 mod windows_paths;
 
 use console::ConsoleState;

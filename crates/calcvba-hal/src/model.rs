@@ -157,6 +157,8 @@ pub struct HostPolicy {
     pub windows_drive_mounts: Vec<WindowsDriveMount>,
     /// Host roots for named UNC server/share pairs.
     pub windows_unc_roots: std::collections::BTreeMap<(String, String), std::path::PathBuf>,
+    /// UNC roots with read-only access, keyed by their folded server/share names.
+    pub windows_unc_read_only: std::collections::BTreeSet<(String, String)>,
     /// Optional explicit ANSI code page override (e.g. 1252, 1251, 932).
     pub codepage: Option<u16>,
     pub allow_dynamic_link: bool,
@@ -202,6 +204,7 @@ impl HostPolicy {
             windows_drive_roots: Default::default(),
             windows_drive_mounts: Vec::new(),
             windows_unc_roots: Default::default(),
+            windows_unc_read_only: Default::default(),
             codepage: None,
             allow_dynamic_link: true,
             allow_com_activation: true,
@@ -275,13 +278,31 @@ impl HostPolicy {
     }
 
     pub fn with_windows_unc_root(
-        mut self,
+        self,
         server: &str,
         share: &str,
         root: impl Into<std::path::PathBuf>,
     ) -> Self {
-        self.windows_unc_roots
-            .insert((server.to_lowercase(), share.to_lowercase()), root.into());
+        self.with_windows_unc_mount(server, share, root, WindowsMountAccess::ReadWrite)
+    }
+
+    pub fn with_windows_unc_mount(
+        mut self,
+        server: &str,
+        share: &str,
+        root: impl Into<std::path::PathBuf>,
+        access: WindowsMountAccess,
+    ) -> Self {
+        let key = (server.to_lowercase(), share.to_lowercase());
+        match access {
+            WindowsMountAccess::Read => {
+                self.windows_unc_read_only.insert(key.clone());
+            }
+            WindowsMountAccess::ReadWrite => {
+                self.windows_unc_read_only.remove(&key);
+            }
+        }
+        self.windows_unc_roots.insert(key, root.into());
         self
     }
 
@@ -319,6 +340,7 @@ impl Default for HostPolicy {
             windows_drive_roots: Default::default(),
             windows_drive_mounts: Vec::new(),
             windows_unc_roots: Default::default(),
+            windows_unc_read_only: Default::default(),
             codepage: None,
             allow_dynamic_link: false,
             allow_com_activation: true,

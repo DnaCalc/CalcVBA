@@ -46,15 +46,19 @@ impl WindowsPaths {
             let mut parts = unc.splitn(3, '/');
             let server = parts.next().unwrap_or_default();
             let share = parts.next().unwrap_or_default();
-            let root = policy
-                .windows_unc_roots
-                .get(&(server.to_lowercase(), share.to_lowercase()))
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("UNC share {server}/{share} is unmapped"),
-                    )
-                })?;
+            let key = (server.to_lowercase(), share.to_lowercase());
+            let root = policy.windows_unc_roots.get(&key).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("UNC share {server}/{share} is unmapped"),
+                )
+            })?;
+            if write && policy.windows_unc_read_only.contains(&key) {
+                return Err(io::Error::new(
+                    io::ErrorKind::ReadOnlyFilesystem,
+                    "Windows mount is read-only",
+                ));
+            }
             (None, Some(root), parts.next().unwrap_or_default())
         } else {
             let (drive, path) = match normalized.as_bytes() {
@@ -221,9 +225,10 @@ impl StandardHostServices {
     pub(super) fn uses_windows_paths(&self) -> bool {
         !cfg!(windows)
             && self.native_fs_enabled()
-            && !(self.policy.windows_drive_roots.is_empty()
-                && self.policy.windows_drive_mounts.is_empty()
-                && self.policy.windows_unc_roots.is_empty())
+            && (self.policy.windows_faithful
+                || !self.policy.windows_drive_roots.is_empty()
+                || !self.policy.windows_drive_mounts.is_empty()
+                || !self.policy.windows_unc_roots.is_empty())
     }
 
     pub(super) fn map_path(
@@ -319,7 +324,8 @@ impl StandardHostServices {
     pub(super) fn windows_path_for_host(&self, path: &Path) -> Option<String> {
         let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let state = self.windows_paths.borrow();
-        self.policy
+        let drives = self
+            .policy
             .windows_drive_roots
             .iter()
             .map(|(&drive, root)| (drive, &[][..], root))
@@ -340,9 +346,28 @@ impl StandardHostServices {
                     "{drive}:\\{}",
                     relative.to_string_lossy().replace('/', "\\")
                 );
-                let (_, resolved, _) = state.resolve(&self.policy, &windows, false).ok()?;
-                let resolved = fs::canonicalize(&resolved).unwrap_or(resolved);
-                (resolved == absolute).then_some((root.components().count(), prefix.len(), windows))
+                Some((root.components().count(), prefix.len(), windows))
+            });
+        let shares = self
+            .policy
+            .windows_unc_roots
+            .iter()
+            .filter_map(|((server, share), path)| {
+                let root = mapped_root(path).ok()?;
+                let suffix = absolute.strip_prefix(&root).ok()?;
+                let windows = format!(
+                    r"\\{server}\{share}\{}",
+                    suffix.to_string_lossy().replace('/', "\\")
+                );
+                Some((root.components().count(), 0, windows))
+            });
+        shares
+            .chain(drives)
+            .filter(|(_, _, windows)| {
+                let Ok((_, resolved, _)) = state.resolve(&self.policy, windows, false) else {
+                    return false;
+                };
+                fs::canonicalize(&resolved).unwrap_or(resolved) == absolute
             })
             .max_by_key(|(depth, prefix, _)| (*depth, *prefix))
             .map(|(_, _, windows)| windows)

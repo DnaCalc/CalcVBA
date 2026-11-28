@@ -166,13 +166,13 @@ fn make_owner_writable(permissions: &mut fs::Permissions) {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_mapped_attributes(path: &Path) -> std::io::Result<Option<i32>> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let path = CString::new(path.as_os_str().as_bytes())?;
+    let c_path = CString::new(path.as_os_str().as_bytes())?;
     let mut bitset = 0u8;
     // SAFETY: path/name are terminated strings and bitset is a live one-byte buffer.
     #[cfg(target_os = "linux")]
     let read = unsafe {
         libc::getxattr(
-            path.as_ptr(),
+            c_path.as_ptr(),
             c"user.calcvba.attributes".as_ptr(),
             (&raw mut bitset).cast(),
             1,
@@ -182,7 +182,7 @@ fn read_mapped_attributes(path: &Path) -> std::io::Result<Option<i32>> {
     #[cfg(target_os = "macos")]
     let read = unsafe {
         libc::getxattr(
-            path.as_ptr(),
+            c_path.as_ptr(),
             c"org.dnacalc.calcvba.attributes".as_ptr(),
             (&raw mut bitset).cast(),
             1,
@@ -200,6 +200,10 @@ fn read_mapped_attributes(path: &Path) -> std::io::Result<Option<i32>> {
         )),
         -1 => {
             let error = std::io::Error::last_os_error();
+            #[cfg(target_os = "linux")]
+            if error.kind() == std::io::ErrorKind::Unsupported {
+                return super::windows_attributes::read(path);
+            }
             if error.raw_os_error() == Some(missing_attribute)
                 || error.kind() == std::io::ErrorKind::Unsupported
             {
@@ -223,13 +227,13 @@ fn read_mapped_attributes(_path: &Path) -> std::io::Result<Option<i32>> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn write_mapped_attributes(path: &Path, bitset: i32) -> std::io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let path = CString::new(path.as_os_str().as_bytes())?;
+    let c_path = CString::new(path.as_os_str().as_bytes())?;
     let bitset = bitset as u8;
     // SAFETY: path/name are terminated strings and bitset is a live one-byte buffer.
     #[cfg(target_os = "linux")]
     let written = unsafe {
         libc::setxattr(
-            path.as_ptr(),
+            c_path.as_ptr(),
             c"user.calcvba.attributes".as_ptr(),
             (&raw const bitset).cast(),
             1,
@@ -240,7 +244,7 @@ fn write_mapped_attributes(path: &Path, bitset: i32) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let written = unsafe {
         libc::setxattr(
-            path.as_ptr(),
+            c_path.as_ptr(),
             c"org.dnacalc.calcvba.attributes".as_ptr(),
             (&raw const bitset).cast(),
             1,
@@ -251,7 +255,12 @@ fn write_mapped_attributes(path: &Path, bitset: i32) -> std::io::Result<()> {
     if written == 0 {
         Ok(())
     } else {
-        Err(std::io::Error::last_os_error())
+        let error = std::io::Error::last_os_error();
+        #[cfg(target_os = "linux")]
+        if error.kind() == std::io::ErrorKind::Unsupported {
+            return super::windows_attributes::write(path, bitset);
+        }
+        Err(error)
     }
 }
 

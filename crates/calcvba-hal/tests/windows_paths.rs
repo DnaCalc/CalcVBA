@@ -168,3 +168,60 @@ fn longest_drive_mount_resolves_relative_paths_and_enforces_read_only() {
     assert_eq!(fs::read(temp.join("yes.txt")).unwrap(), b"nested");
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn unc_mount_access_is_enforced_case_insensitively() {
+    let root = std::env::temp_dir().join(format!("calcvba-hal-unc-mount-{}", std::process::id()));
+    let input = root.join("input");
+    let output = root.join("output");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    fs::write(input.join("Data.txt"), b"test data").unwrap();
+    let host = HostBuilder::new()
+        .profile(HalProfileId::Linux)
+        .policy(
+            HostPolicy::native()
+                .with_windows_unc_mount("Server", "Input", &input, WindowsMountAccess::Read)
+                .with_windows_unc_root("Server", "Output", &output),
+        )
+        .build();
+    let file = host.fs();
+    let path = Variant::from_string;
+    let data = r"\\SERVER\input\data.TXT";
+    assert_eq!(file.file_len_variant(path(data)).unwrap().as_i32(), Some(9));
+    for denied in [
+        file.file_copy_variant(path(data), path(r"\\Server\INPUT\blocked.txt")),
+        file.name_variant(path(data), path(r"\\Server\Output\moved.txt")),
+        file.kill_variant(path(r"\\Server\INPUT\*.txt")),
+        file.set_attr_variant(path(data), Variant::from_i32(2)),
+    ] {
+        assert_eq!(denied.unwrap_err().host_error_code, Some(75));
+    }
+    file.file_copy_variant(path(data), path(r"\\Server\output\copy.txt"))
+        .unwrap();
+    assert_eq!(fs::read(output.join("copy.txt")).unwrap(), b"test data");
+    assert_eq!(fs::read_dir(&input).unwrap().count(), 1);
+    assert!(input.join("Data.txt").exists());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn faithful_filesystem_with_no_mounts_cannot_read_host_paths() {
+    let root =
+        std::env::temp_dir().join(format!("calcvba-hal-empty-mounts-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let input = root.join("input.txt");
+    fs::write(&input, b"outside the Windows namespace").unwrap();
+    let mut policy = HostPolicy::native();
+    policy.windows_faithful = true;
+    let host = HostBuilder::new()
+        .profile(HalProfileId::Linux)
+        .policy(policy)
+        .build();
+    let error = host
+        .fs()
+        .file_len_variant(Variant::from_string(input.to_str().unwrap()))
+        .unwrap_err();
+    assert_eq!(error.host_error_code, Some(76));
+    fs::remove_dir_all(root).unwrap();
+}

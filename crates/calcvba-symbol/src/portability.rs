@@ -324,7 +324,7 @@ pub enum FeatureClass {
     Windows,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Support {
     Native,
@@ -378,6 +378,8 @@ pub struct Report {
     pub findings: Vec<Finding>,
     pub parse_errors: Vec<ParseIssue>,
     pub references: Vec<TypeLibraryFinding>,
+    pub effects_complete: bool,
+    pub procedures: Vec<ProcedureEffects>,
 }
 
 impl Report {
@@ -390,8 +392,36 @@ impl Report {
             findings: Vec::new(),
             parse_errors: Vec::new(),
             references: Vec::new(),
+            effects_complete: false,
+            procedures: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryStatus {
+    Runs,
+    MayStop,
+    CannotRun,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct PortabilityEffect {
+    pub feature: String,
+    pub detail: Option<String>,
+    pub verdict: Support,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProcedureEffects {
+    pub project: String,
+    pub module: String,
+    pub procedure: String,
+    pub status: EntryStatus,
+    pub may: Vec<PortabilityEffect>,
+    pub must: Vec<PortabilityEffect>,
+    pub unknown: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -586,25 +616,26 @@ fn check_project_inner(
 }
 
 pub fn check_source(name: &str, source: &str, host: Host) -> Result<Report, String> {
+    check_project(&[source_manifest(name, source)], host)
+}
+
+pub fn source_manifest(name: &str, source: &str) -> SymbolProjectManifest {
     use crate::manifest as sym;
-    check_project(
-        &[SymbolProjectManifest {
-            project_name: name.into(),
-            project_kind: sym::ProjectKind::Source,
-            modules: vec![ModuleUnit {
-                module_name: name.into(),
-                module_kind: ModuleKind::Procedural,
-                attributes: sym::ModuleAttributes::named(name),
-                source: source.into(),
-            }],
-            references: Vec::new(),
-            reference_projects: Vec::new(),
-            conditional_constants: Default::default(),
-            conditional_compilation_target: Default::default(),
-            codepage: None,
+    SymbolProjectManifest {
+        project_name: name.into(),
+        project_kind: sym::ProjectKind::Source,
+        modules: vec![ModuleUnit {
+            module_name: name.into(),
+            module_kind: ModuleKind::Procedural,
+            attributes: sym::ModuleAttributes::named(name),
+            source: source.into(),
         }],
-        host,
-    )
+        references: Vec::new(),
+        reference_projects: Vec::new(),
+        conditional_constants: Default::default(),
+        conditional_compilation_target: Default::default(),
+        codepage: None,
+    }
 }
 
 struct Scanner<'a> {

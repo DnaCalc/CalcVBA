@@ -162,7 +162,8 @@ fn run_triage(args: Vec<String>) {
 }
 
 fn check_portability(args: &[String]) -> Result<(), String> {
-    use calcvba_symbol::portability::{Host, check_project, check_source};
+    use calcvba_engine::portability::check_source_projects;
+    use calcvba_symbol::portability::{Host, source_manifest};
 
     let mut args = args.iter().map(String::as_str);
     let mut host = Host::current();
@@ -192,7 +193,10 @@ fn check_portability(args: &[String]) -> Result<(), String> {
         "bas" | "cls" | "frm" => {
             let source = fs::read_to_string(input)
                 .map_err(|error| format!("{}: {error}", input.display()))?;
-            check_source(&input.display().to_string(), &source, host)?
+            check_source_projects(
+                &[source_manifest(&input.display().to_string(), &source)],
+                host,
+            )?
         }
         "xls" | "xlsm" | "xlsb" | "xlam" | "xla" | "bin" | "xltm" | "xlt" | "xlsx" => {
             let workbook = calcvba_office::OfficeFile::open(input)
@@ -201,7 +205,7 @@ fn check_portability(args: &[String]) -> Result<(), String> {
                 .project
                 .to_manifest()
                 .map_err(|error| error.to_string())?;
-            check_project(&[project], host)?
+            check_source_projects(&[project], host)?
         }
         "oxi" => {
             let bytes = fs::read(input).map_err(|error| format!("{}: {error}", input.display()))?;
@@ -213,7 +217,7 @@ fn check_portability(args: &[String]) -> Result<(), String> {
                 .map_err(|_| format!("no .basproj or .vbp project at {}", input.display()))?;
             let closure = calcvba_project::load_project_closure_with_entry(&project, None)
                 .map_err(|error| error.to_diagnostic().message)?;
-            check_project(&closure, host)?
+            check_source_projects(&closure, host)?
         }
     };
     println!(

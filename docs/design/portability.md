@@ -33,8 +33,12 @@ The Excel object model (Workbooks, Range, Application.PathSeparator...) is a hos
 | `findings` | Rows carry `project`, `module`, `procedure`, `line`, `feature`, `class`, `verdict`, `detail` and `mac_dialect`. The last field describes the Mac dialect. Module, procedure, line, detail and Mac dialect can be null. Source lines are one-based. |
 | `parse_errors` | Rows carry `project`, `module`, `line` and `message`. |
 | `references` | Ordered source type-library references, including unused ones. Rows carry `project`, `name`, `guid` (nullable) and `state` (`implemented`, `types_only` or `unknown`). |
+| `effects_complete` | `true` when a bound procedure graph was available. For source, this requires binding and elaboration with the available static type information. |
+| `procedures` | Bound rows carry `project`, `module`, `procedure`, `status`, `may`, `must` and `unknown`. Each effect carries `feature`, nullable `detail` and a finding verdict. |
 
 Finding verdicts use the shared vocabulary `native`, `model`, `host`, `shim`, `replace`, `mediated` and `reject`. The static checker uses its catalogue and reports unknown references on every host. Their `findings` rows carry `reject`. In source-less images, `findings` include retained interfaces and `references` is empty. Compiled findings can identify a procedure without a source line.
+
+Procedure statuses are `runs`, `may_stop` and `cannot_run`. `cannot_run` indicates a rejected must-effect. `may_stop` indicates a possible rejection or an unresolved call such as a computed ProgID. Bound effects follow static calls through the project closure and intersect branch effects on normal paths. Procedures with dynamic error control or computed branches can have a conservative may-set and an empty must-set. A source report can retain its findings when bound effects are unavailable.
 
 When the faithful loader cannot resolve a library, procedures with an explicitly qualified declaration or `New` using one of its types refuse on entry and name the library. Other procedures can load and run in the same project.
 

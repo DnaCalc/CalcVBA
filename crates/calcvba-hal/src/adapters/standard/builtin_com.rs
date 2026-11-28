@@ -1,3 +1,8 @@
+mod ado_stream;
+mod text_stream;
+mod wsh_shell;
+mod xml;
+
 use calcvba_com::call::ComFault;
 use calcvba_com::{DynamicCallArg, DynamicCallKind, DynamicCallRequest, DynamicMemberSelector};
 use calcvba_runtime::{
@@ -5,15 +10,23 @@ use calcvba_runtime::{
     variant_to_vba_string,
 };
 use std::cell::RefCell;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use super::StandardHostServices;
 use crate::{HalError, HalResult, model::CapabilityId};
+use ado_stream::AdoStream;
+use text_stream::TextStream;
+use xml::XmlElement;
 
 pub(super) enum BuiltinObject {
     FileSystem,
+    TextStream(RefCell<TextStream>),
+    AdoStream(RefCell<AdoStream>),
+    WshShell,
     Document(RefCell<Document>),
-    Element { name: String, text: String },
+    Element(XmlElement),
 }
 
 pub(super) struct Document {
@@ -25,8 +38,11 @@ impl BuiltinObject {
     fn name(&self) -> &'static str {
         match self {
             Self::FileSystem => "FileSystemObject",
+            Self::TextStream(_) => "TextStream",
+            Self::AdoStream(_) => "Stream",
+            Self::WshShell => "WshShell",
             Self::Document(_) => "DOMDocument",
-            Self::Element { .. } => "IXMLDOMElement",
+            Self::Element(_) => "IXMLDOMElement",
         }
     }
 
@@ -34,6 +50,10 @@ impl BuiltinObject {
         use calcvba_com::platform::portable::BuiltinProgId;
         let object = match BuiltinProgId::resolve(prog_id) {
             Some(BuiltinProgId::FileSystemObject) if host.native_fs_enabled() => Self::FileSystem,
+            Some(BuiltinProgId::AdoStream) if host.native_fs_enabled() => {
+                Self::AdoStream(RefCell::default())
+            }
+            Some(BuiltinProgId::WshShell) if host.policy.windows_faithful => Self::WshShell,
             Some(BuiltinProgId::XmlDocument) => Self::Document(RefCell::new(Document {
                 asynchronous: true,
                 root: Variant::nothing(),
@@ -44,9 +64,12 @@ impl BuiltinObject {
     }
 
     fn retain(self, host: &StandardHostServices) -> HalResult<Variant> {
-        let identity = host
-            .borrow_projection(CapabilityId::ComActivationDispatch, "create_object")?
-            .allocate_handle();
+        let identity = match &self {
+            Self::Element(node) => node.identity(host)?,
+            _ => host
+                .borrow_projection(CapabilityId::ComActivationDispatch, "create_object")?
+                .allocate_handle(),
+        };
         Ok(Variant::from_object_ref(
             ObjectRef::from_compat_identity_with_local_state(identity, Rc::new(self)),
         ))
@@ -85,6 +108,13 @@ impl BuiltinObject {
         use DynamicCallKind::{PropertyLet, PropertySet};
         let put = matches!(kind, Some(PropertyLet | PropertySet));
         match self {
+            Self::FileSystem if member == "createtextfile" && !put => {
+                TextStream::create(host, args)
+            }
+            Self::FileSystem if member == "opentextfile" && !put => TextStream::open(host, args),
+            Self::TextStream(stream) if !put => stream.borrow_mut().call(host, member, args),
+            Self::AdoStream(stream) => stream.borrow_mut().call(host, member, put, args),
+            Self::WshShell => wsh_shell::call(host, member, put, args),
             Self::FileSystem if !put && matches!(member, "getfilename" | "getextensionname") => {
                 let extension = member == "getextensionname";
                 let parameter = if extension { "path" } else { "pathspec" };
@@ -137,7 +167,7 @@ impl BuiltinObject {
                     .map_err(|_| fault(host, 13))?;
                 let element = String::from_utf16(xml.payload_units())
                     .ok()
-                    .and_then(|text| document_element(&text));
+                    .and_then(|text| XmlElement::parse(&text).map(Self::Element));
                 let loaded = element.is_some();
                 doc.borrow_mut().root = match element {
                     Some(root) => root.retain(host)?,
@@ -148,11 +178,25 @@ impl BuiltinObject {
             Self::Document(doc) if member == "documentelement" && !put && args.is_empty() => {
                 Ok(doc.borrow().root.clone())
             }
-            Self::Element { name, .. } if member == "nodename" && !put && args.is_empty() => {
-                Ok(Variant::from_string(name.as_str()))
+            Self::Document(doc) if member == "selectsinglenode" && !put => {
+                let root = doc
+                    .borrow()
+                    .root
+                    .as_object_ref()
+                    .and_then(|object| object.local_state::<Self>());
+                match root.as_deref() {
+                    Some(Self::Element(node)) => node.select(host, args, true),
+                    _ => Ok(Variant::nothing()),
+                }
             }
-            Self::Element { text, .. } if member == "text" && !put && args.is_empty() => {
-                Ok(Variant::from_string(text.as_str()))
+            Self::Element(node) if member == "selectsinglenode" && !put => {
+                node.select(host, args, false)
+            }
+            Self::Element(node) if member == "nodename" && !put && args.is_empty() => {
+                Ok(Variant::from_string(node.name.as_str()))
+            }
+            Self::Element(node) if member == "text" && !put && args.is_empty() => {
+                Ok(Variant::from_string(node.text.as_str()))
             }
             _ => Err(fault(host, 438)),
         }
@@ -197,24 +241,85 @@ fn argument<'a>(
         .ok_or_else(|| fault(host, 449))
 }
 
-fn fault(host: &StandardHostServices, number: i32) -> HalError {
-    host.com_call_fault("dispatch_invoke", ComFault::number(number))
+fn ordered_arguments<'a, const N: usize>(
+    host: &StandardHostServices,
+    args: &'a [DynamicCallArg],
+    parameters: [&str; N],
+) -> HalResult<[Option<&'a Variant>; N]> {
+    let mut values = [None; N];
+    let mut supplied = [false; N];
+    let mut next = 0;
+    for argument in args {
+        let index = if let Some(name) = &argument.name {
+            parameters
+                .iter()
+                .position(|parameter| name.eq_ignore_ascii_case(parameter))
+                .ok_or_else(|| fault(host, 448))?
+        } else {
+            while next < N && supplied[next] {
+                next += 1;
+            }
+            if next == N {
+                return Err(fault(host, 450));
+            }
+            next
+        };
+        if supplied[index] {
+            return Err(fault(host, 450));
+        }
+        supplied[index] = true;
+        values[index] = argument.value.as_ref().map(|value| value.variant());
+    }
+    Ok(values)
 }
 
-fn document_element(xml: &str) -> Option<BuiltinObject> {
-    let parsed = roxmltree::Document::parse(xml).ok()?;
-    let root = parsed.root_element();
-    let name = xml[root.range().start + 1..]
-        .split([' ', '\t', '\r', '\n', '/', '>'])
-        .next()?
-        .to_owned();
-    let text: String = root
-        .descendants()
-        .filter(roxmltree::Node::is_text)
-        .filter_map(|node| node.text())
-        .collect();
-    Some(BuiltinObject::Element {
-        name,
-        text: text.trim_matches([' ', '\t', '\r', '\n']).to_owned(),
-    })
+fn com_file_path(
+    host: &StandardHostServices,
+    path: Option<&Variant>,
+    operation: &'static str,
+    write: bool,
+) -> HalResult<PathBuf> {
+    let capability = CapabilityId::FileSystemIo;
+    if !host.native_fs_enabled() || !host.supports(capability) {
+        return Err(host.unsupported(capability, operation));
+    }
+    if write && !host.policy.allow_filesystem_mutation {
+        return Err(host.denied(capability, operation));
+    }
+    let path = path.ok_or_else(|| fault(host, 449))?;
+    let path = variant_to_vba_string(path).map_err(|_| fault(host, 13))?;
+    host.map_path(&path.as_str(), capability, operation, write)
+}
+
+fn com_file_error(
+    host: &StandardHostServices,
+    operation: &'static str,
+    path: &Path,
+    error: io::Error,
+) -> HalError {
+    let code = match error.kind() {
+        io::ErrorKind::NotFound
+            if path
+                .parent()
+                .is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.is_dir()) =>
+        {
+            76
+        }
+        io::ErrorKind::NotADirectory => 76,
+        io::ErrorKind::NotFound => 53,
+        io::ErrorKind::AlreadyExists => 58,
+        io::ErrorKind::PermissionDenied => 70,
+        _ => 75,
+    };
+    HalError::adapter_fault(
+        host.profile,
+        CapabilityId::FileSystemIo,
+        operation,
+        error.to_string(),
+    )
+    .with_host_error_code(code)
+}
+
+fn fault(host: &StandardHostServices, number: i32) -> HalError {
+    host.com_call_fault("dispatch_invoke", ComFault::number(number))
 }

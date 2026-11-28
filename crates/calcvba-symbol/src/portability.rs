@@ -297,7 +297,12 @@ pub fn com_activation_support(
     let portable = match prog_id.and_then(BuiltinProgId::resolve) {
         Some(BuiltinProgId::Dictionary) => true,
         Some(BuiltinProgId::RegExp) => !is_get_object,
-        Some(BuiltinProgId::FileSystemObject | BuiltinProgId::XmlDocument) => host != Host::Browser,
+        Some(
+            BuiltinProgId::FileSystemObject
+            | BuiltinProgId::AdoStream
+            | BuiltinProgId::WshShell
+            | BuiltinProgId::XmlDocument,
+        ) => host != Host::Browser,
         None => false,
     };
     if can_activate && portable {
@@ -995,9 +1000,12 @@ impl<'a> Scanner<'a> {
             let portable = match prog_id.as_deref().and_then(BuiltinProgId::resolve) {
                 Some(BuiltinProgId::Dictionary) => true,
                 Some(BuiltinProgId::RegExp) => row.name == "CreateObject",
-                Some(BuiltinProgId::FileSystemObject | BuiltinProgId::XmlDocument) => {
-                    self.report.host != Host::Browser
-                }
+                Some(
+                    BuiltinProgId::FileSystemObject
+                    | BuiltinProgId::AdoStream
+                    | BuiltinProgId::WshShell
+                    | BuiltinProgId::XmlDocument,
+                ) => self.report.host != Host::Browser,
                 None => false,
             };
             if support == Support::Replace && !(can_activate && portable) {

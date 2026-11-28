@@ -760,7 +760,7 @@ impl StandardHostServices {
     }
 
     #[cfg(not(windows))]
-    fn windows_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    pub(super) fn windows_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         use std::{env, path::PathBuf};
         let mut vars: Vec<_> = if self.policy.windows_faithful {
             let mut seen = std::collections::BTreeSet::new();
@@ -895,7 +895,7 @@ impl StandardHostServices {
     }
 }
 
-fn fold_env_name(name: &str) -> String {
+pub(super) fn fold_env_name(name: &str) -> String {
     let mut folded = String::with_capacity(name.len());
     for ch in name.chars() {
         let mut upper = ch.to_uppercase();

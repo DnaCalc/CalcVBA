@@ -94,3 +94,39 @@ fn faithful_file_system_path_helpers_use_windows_text_without_a_file() {
         "Missing.tar.GZ|GZ|||Leaf.log",
     );
 }
+
+#[test]
+fn faithful_mode_file_system_object_reads_and_writes_mapped_text() {
+    assert_probe(
+        "fso-stream",
+        include_str!("fixtures/portable-fso-stream.bas"),
+        "12|True",
+    );
+}
+
+#[test]
+fn faithful_mode_adodb_stream_saves_utf8_and_reads_binary() {
+    assert_probe(
+        "ado-stream",
+        include_str!("fixtures/portable-adodb-stream.bas"),
+        "0|8\n239|187|191\nTrue",
+    );
+}
+
+#[test]
+fn faithful_mode_wscript_shell_uses_session_directory_and_environment() {
+    assert_probe(
+        "wscript-environment",
+        include_str!("fixtures/portable-wscript-shell.bas"),
+        "True|True\nTrue",
+    );
+}
+
+#[test]
+fn portable_dom_selects_the_first_matching_element() {
+    assert_probe(
+        "xml-path",
+        include_str!("fixtures/portable-xml-path.bas"),
+        "item|first|first|True|True",
+    );
+}

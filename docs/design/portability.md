@@ -187,6 +187,14 @@ Off Windows, the faithful `Environ` table supplies the Windows persona. It reads
 
 The portable `Scripting.FileSystemObject` implements `GetFileName` and `GetExtensionName` over the Windows path string. The methods preserve UTF-16 text and work with names that refer to absent files. [GetFileName](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/getfilename-method-visual-basic-for-applications) and [GetExtensionName](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/getextensionname-method).
 
+The portable FileSystemObject provides `CreateTextFile`, `OpenTextFile` and sequential TextStream methods through the session's filesystem access and Windows path mappings. Text uses the project ANSI code page or UTF-16LE. [CreateTextFile](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/createtextfile-method) and [OpenTextFile](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/opentextfile-method).
+
+Portable `ADODB.Stream` supports binary, UTF-16LE and UTF-8 buffers. `LoadFromFile` and `SaveToFile` use the session's mapped filesystem. [ADO Stream methods](https://learn.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/stream-properties-methods-and-events-ado).
+
+In faithful mode, portable `WScript.Shell` expands variables from the project's Windows environment and uses its mapped current directory. `SpecialFolders` supplies AppData, Desktop and MyDocuments when available. `Popup` with the default title and timeout uses the host's existing message-box service. `Run`, `Exec` and registry methods refuse. [Windows environment expansion](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-expandenvironmentstringsw).
+
+Portable MSXML DOM documents support `SelectSingleNode` on in-memory XML with unprefixed element names, wildcard elements, child paths and leading descendant selectors. The first matching element retains its document identity. [MSXML node selection](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ms761386%28v%3Dvs.85%29).
+
 ## 6. Shims and models
 
 | Shim or model | Hosts | Design |

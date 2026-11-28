@@ -15,6 +15,8 @@ pub enum BuiltinProgId {
     Dictionary,
     RegExp,
     FileSystemObject,
+    AdoStream,
+    WshShell,
     XmlDocument,
 }
 
@@ -24,6 +26,8 @@ impl BuiltinProgId {
             "scripting.dictionary" => Self::Dictionary,
             "vbscript.regexp" => Self::RegExp,
             "scripting.filesystemobject" => Self::FileSystemObject,
+            "adodb.stream" => Self::AdoStream,
+            "wscript.shell" | "wscript.shell.1" => Self::WshShell,
             "msxml2.domdocument" | "msxml2.domdocument.3.0" | "msxml2.domdocument.6.0" => {
                 Self::XmlDocument
             }

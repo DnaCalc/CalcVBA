@@ -606,6 +606,10 @@ impl HostServices for PolicyHost {
 }
 
 impl FileSystemHal for PolicyHost {
+    fn windows_path_for_host(&self, path: &std::path::Path) -> Option<String> {
+        self.inner.fs().windows_path_for_host(path)
+    }
+
     fn open_variant(&self, path: Variant, mode: Variant) -> HalResult<Variant> {
         self.check_open("open", &path, &mode)?;
         self.inner.fs().open_variant(path, mode)

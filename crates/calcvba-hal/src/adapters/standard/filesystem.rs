@@ -870,6 +870,18 @@ impl StandardHostServices {
 }
 
 impl FileSystemHal for StandardHostServices {
+    fn windows_path_for_host(&self, path: &Path) -> Option<String> {
+        #[cfg(windows)]
+        if self.native_fs_enabled() && path.is_absolute() {
+            return path.to_str().map(str::to_owned);
+        }
+        #[cfg(not(windows))]
+        if self.uses_windows_paths() {
+            return StandardHostServices::windows_path_for_host(self, path);
+        }
+        None
+    }
+
     fn open_variant(&self, path: Variant, mode: Variant) -> HalResult<Variant> {
         let capability = CapabilityId::FileSystemIo;
         if !self.supports(capability) {

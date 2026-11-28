@@ -359,6 +359,11 @@ pub trait EventPumpHal {
 }
 
 pub trait FileSystemHal {
+    /// Express a host-selected path in the same Windows namespace that the file facet resolves.
+    fn windows_path_for_host(&self, _path: &std::path::Path) -> Option<String> {
+        None
+    }
+
     fn open_variant(&self, _path: Variant, _mode: Variant) -> HalResult<Variant> {
         variant_companion_not_overridden(CapabilityId::FileSystemIo, "open_variant")
     }

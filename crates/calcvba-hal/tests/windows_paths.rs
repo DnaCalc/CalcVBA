@@ -175,6 +175,12 @@ fn longest_drive_mount_resolves_relative_paths_and_enforces_read_only() {
         .policy(policy)
         .build();
     let file = host.fs();
+    assert_eq!(
+        file.windows_path_for_host(&restricted.join("b.txt"))
+            .as_deref(),
+        Some(r"C:\Temp\Shared\b.txt"),
+    );
+    assert_eq!(file.windows_path_for_host(&root.join("outside")), None);
     let path = Variant::from_string;
     file.ch_dir_variant(path(r"C:\tEMP\SHARED")).unwrap();
     assert_eq!(

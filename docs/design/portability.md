@@ -20,7 +20,21 @@ The [portability matrix](../../crates/calcvba-symbol/src/portability/matrix.rs) 
 
 The Excel object model (Workbooks, Range, Application.PathSeparator...) is a host concern: OneCalc and DNA Calc provide it. It needs the same treatment separately.
 
-The report's `references` array lists the source project's ordered type-library references, including unused ones. Each entry has `project`, `name`, `guid` (nullable) and `state` (`implemented`, `types_only` or `unknown`). The static checker uses its own catalogue and leaves unknown references visible on every host. The `findings` array also records their `reject` verdict. Source-less images report retained interfaces in `findings`; they lack the source project's reference inventory.
+### JSON format
+
+`calcvba-cli check --portability` writes one JSON object to standard output. The same object is available to Rust hosts as `calcvba_host::portability::Report`.
+
+| Field | Version 1 meaning |
+| --- | --- |
+| `schema_version` | Integer `1`. Readers can ignore added fields. |
+| `host` | `windows`, `macos`, `linux`, `wasi` or `browser`. |
+| `analysis_complete` | `true` when the input parsed without errors. Examine this field before using the project verdict. |
+| `verdict` | Project summary label, one of `portable`, `host-dependent values`, `portable with shims` or `needs Windows`. `needs Windows` is the existing summary label for a rejected finding on the selected host. |
+| `findings` | Rows carry `project`, `module`, `procedure`, `line`, `feature`, `class`, `verdict`, `detail` and `mac_dialect`. The last field describes the Mac dialect. Module, procedure, line, detail and Mac dialect can be null. Source lines are one-based. |
+| `parse_errors` | Rows carry `project`, `module`, `line` and `message`. |
+| `references` | Ordered source type-library references, including unused ones. Rows carry `project`, `name`, `guid` (nullable) and `state` (`implemented`, `types_only` or `unknown`). |
+
+Finding verdicts use the shared vocabulary `native`, `model`, `host`, `shim`, `replace`, `mediated` and `reject`. The static checker uses its catalogue and reports unknown references on every host. Their `findings` rows carry `reject`. In source-less images, `findings` include retained interfaces and `references` is empty. Compiled findings can identify a procedure without a source line.
 
 When the faithful loader cannot resolve a library, procedures with an explicitly qualified declaration or `New` using one of its types refuse on entry and name the library. Other procedures can load and run in the same project.
 
@@ -56,6 +70,7 @@ For each host, the matrix says what CalcVBA must do there to give the dialect's 
 | **shim** | Emulation: path map, settings store, attribute store, synthetic environment |
 | **host** | A machine value or the UI host's answer |
 | **replace** | Only through a portable replacement: a portable COM class, an emulated Declare entry point |
+| **mediated** | The platform or user grants access to the facility |
 | **reject** | The facility is unavailable on the selected host |
 
 Counts for Windows-dialect code (rows: 214):

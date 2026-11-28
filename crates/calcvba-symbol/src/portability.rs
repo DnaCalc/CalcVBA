@@ -155,7 +155,10 @@ pub fn enforce_report(
             Some("the host has no supported implementation")
         } else if finding.class == FeatureClass::Windows {
             Some("strict mode refuses Windows-specific constructs")
-        } else if matches!(finding.verdict, Support::Shim | Support::Replace) {
+        } else if matches!(
+            finding.verdict,
+            Support::Shim | Support::Replace | Support::Mediated
+        ) {
             Some("strict mode requires native or modelled behaviour")
         } else {
             None
@@ -188,7 +191,7 @@ pub fn enforce_report(
 pub const fn verdict_for_support(support: Support) -> Verdict {
     match support {
         Support::Native | Support::Model => Verdict::Portable,
-        Support::Shim | Support::Replace => Verdict::PortableWithShims,
+        Support::Shim | Support::Replace | Support::Mediated => Verdict::PortableWithShims,
         Support::Host => Verdict::HostDependentValues,
         Support::Reject => Verdict::NeedsWindows,
     }
@@ -329,6 +332,7 @@ pub enum Support {
     Shim,
     Host,
     Replace,
+    Mediated,
     Reject,
 }
 
@@ -356,6 +360,7 @@ pub enum Verdict {
 pub struct Finding {
     pub project: String,
     pub module: Option<String>,
+    pub procedure: Option<String>,
     pub line: Option<usize>,
     pub feature: String,
     pub class: FeatureClass,
@@ -366,11 +371,27 @@ pub struct Finding {
 
 #[derive(Debug, Serialize)]
 pub struct Report {
+    pub schema_version: u32,
     pub host: Host,
+    pub analysis_complete: bool,
     pub verdict: Verdict,
     pub findings: Vec<Finding>,
     pub parse_errors: Vec<ParseIssue>,
     pub references: Vec<TypeLibraryFinding>,
+}
+
+impl Report {
+    pub fn new(host: Host) -> Self {
+        Self {
+            schema_version: 1,
+            host,
+            analysis_complete: true,
+            verdict: Verdict::Portable,
+            findings: Vec::new(),
+            parse_errors: Vec::new(),
+            references: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -406,13 +427,7 @@ fn check_project_inner(
     host: Host,
     browser: BrowserServices,
 ) -> Result<Report, String> {
-    let mut report = Report {
-        host,
-        verdict: Verdict::Portable,
-        findings: Vec::new(),
-        parse_errors: Vec::new(),
-        references: Vec::new(),
-    };
+    let mut report = Report::new(host);
     for project in projects {
         let constants = base_cc_constants_for_target(
             &project.conditional_constants,
@@ -566,6 +581,7 @@ fn check_project_inner(
             }
         }
     }
+    report.analysis_complete = report.parse_errors.is_empty();
     Ok(report)
 }
 
@@ -639,16 +655,11 @@ impl<'a> Scanner<'a> {
         detail: Option<String>,
         mac_dialect: Option<&'static str>,
     ) {
-        let verdict = match support {
-            Support::Native | Support::Model => Verdict::Portable,
-            Support::Shim | Support::Replace => Verdict::PortableWithShims,
-            Support::Host => Verdict::HostDependentValues,
-            Support::Reject => Verdict::NeedsWindows,
-        };
-        self.report.verdict = self.report.verdict.max(verdict);
+        self.report.verdict = self.report.verdict.max(verdict_for_support(support));
         self.report.findings.push(Finding {
             project: self.project.into(),
             module: self.module.map(str::to_owned),
+            procedure: None,
             line: offset.map(|offset| self.line(offset)),
             feature: feature.into(),
             class,
@@ -764,6 +775,7 @@ impl<'a> Scanner<'a> {
         names: &HashSet<String>,
         consts: &HashMap<String, String>,
     ) {
+        let first_finding = self.report.findings.len();
         let offset = node.first_token().map(|t| t.offset);
         let statement = match node.kind() {
             K::OpenStmt => Some(("Open / Close / Get / Put", "Open")),
@@ -881,6 +893,13 @@ impl<'a> Scanner<'a> {
             };
         for child in node.child_nodes() {
             self.walk(child, Some(node), names, consts);
+        }
+        if matches!(node.kind(), K::SubDecl | K::FunctionDecl | K::PropertyDecl)
+            && let Some(name) = node.proc_name_token()
+        {
+            for finding in &mut self.report.findings[first_finding..] {
+                finding.procedure = Some(name.text.into());
+            }
         }
     }
 

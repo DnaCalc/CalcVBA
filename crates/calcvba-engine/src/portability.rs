@@ -10,9 +10,8 @@ use calcvba_oxir::inst::{OxAsNew, OxInst};
 use calcvba_oxir::value::{OxArg, OxCallArg, OxConst, OxNativeCallee, OxOperand};
 use calcvba_oxir::{OxImage, OxProgram};
 use calcvba_symbol::portability::{
-    BrowserServices, FeatureClass, Finding, Host, Mode, Report, Support, Verdict,
-    com_activation_support, declare_support, enforce_report, looks_like_windows_path,
-    lookup_matrix, verdict_for_support,
+    BrowserServices, FeatureClass, Finding, Host, Mode, Report, Support, com_activation_support,
+    declare_support, enforce_report, looks_like_windows_path, lookup_matrix, verdict_for_support,
 };
 
 /// Inspect a compiled `.oxi` image against the portability matrix for `host`.
@@ -54,13 +53,7 @@ pub fn enforce_image(
 
 /// Inspect a slice of elaborated [`OxProgram`]s against the portability matrix.
 pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServices) -> Report {
-    let mut report = Report {
-        host,
-        verdict: Verdict::Portable,
-        findings: Vec::new(),
-        parse_errors: Vec::new(),
-        references: Vec::new(),
-    };
+    let mut report = Report::new(host);
     let library = calcvba_bundle::vba_library_bundle();
 
     for program in programs {
@@ -152,6 +145,7 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
 
         // 4. Instructions across every compiled procedure.
         for func in &program.funcs {
+            let first_finding = report.findings.len();
             let module = func
                 .name
                 .split_once('.')
@@ -170,6 +164,10 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
                         browser,
                     );
                 }
+            }
+            let procedure = func.name.rsplit('.').next().unwrap_or(&func.name);
+            for finding in &mut report.findings[first_finding..] {
+                finding.procedure = Some(procedure.into());
             }
         }
     }
@@ -209,6 +207,7 @@ fn record(
     report.findings.push(Finding {
         project: project.to_owned(),
         module: module.map(str::to_owned),
+        procedure: None,
         line: None,
         feature: feature.to_owned(),
         class,

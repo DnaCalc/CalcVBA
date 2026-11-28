@@ -1,5 +1,7 @@
 #![cfg(target_os = "linux")]
-use calcvba_hal::{HalProfileId, HostPolicy, adapters::builder::HostBuilder};
+use calcvba_hal::{
+    HalProfileId, HostPolicy, adapters::builder::HostBuilder, model::WindowsMountAccess,
+};
 use calcvba_runtime::Variant;
 use std::fs;
 
@@ -82,4 +84,87 @@ fn mapped_hidden_system_and_archive_bits_survive_a_new_host() {
     assert_eq!(stored.as_i32(), Some(6));
     assert_eq!(normal.as_bstr().unwrap().as_str(), "");
     assert_eq!(filtered.as_bstr().unwrap().as_str(), "doc.txt");
+}
+
+#[test]
+fn mapped_dir_and_kill_report_both_names_in_a_wildcard_collision() {
+    let root = std::env::temp_dir().join(format!(
+        "calcvba-hal-wildcard-collision-{}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("Notes.txt"), b"one").unwrap();
+    fs::write(root.join("notes.TXT"), b"two").unwrap();
+    let host = HostBuilder::new()
+        .profile(HalProfileId::Linux)
+        .policy(HostPolicy::native().with_windows_drive_root('C', &root))
+        .build();
+    let pattern = || Variant::from_string("C:\\*.txt");
+    let listed = host.process().dir_variant(pattern(), Variant::from_i32(0));
+    let deleted = host.fs().kill_variant(pattern());
+    let still_present = [
+        root.join("Notes.txt").exists(),
+        root.join("notes.TXT").exists(),
+    ];
+    fs::remove_dir_all(&root).unwrap();
+
+    for result in [listed, deleted] {
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("Notes.txt") && error.contains("notes.TXT"),
+            "{error}"
+        );
+    }
+    assert_eq!(still_present, [true, true]);
+}
+
+#[test]
+fn longest_drive_mount_resolves_relative_paths_and_enforces_read_only() {
+    let root = std::env::temp_dir().join(format!("calcvba-hal-drive-mount-{}", std::process::id()));
+    let drive = root.join("drive");
+    let temp = root.join("overlay");
+    let restricted = root.join("restricted");
+    for directory in [&drive, &temp, &restricted] {
+        fs::create_dir_all(directory).unwrap();
+    }
+    fs::write(temp.join("a.txt"), b"temp overlay").unwrap();
+    fs::write(restricted.join("b.txt"), b"nested").unwrap();
+    let policy = HostPolicy::native()
+        .with_windows_drive_root('C', &drive)
+        .with_windows_drive_mount(r"C:\Temp", &temp, WindowsMountAccess::ReadWrite)
+        .unwrap()
+        .with_windows_drive_mount(r"C:\Temp\Shared", &restricted, WindowsMountAccess::Read)
+        .unwrap();
+    let host = HostBuilder::new()
+        .profile(HalProfileId::Linux)
+        .policy(policy)
+        .build();
+    let file = host.fs();
+    let path = Variant::from_string;
+    file.ch_dir_variant(path(r"C:\tEMP\SHARED")).unwrap();
+    assert_eq!(
+        file.cur_dir_variant(path(""))
+            .unwrap()
+            .as_bstr()
+            .unwrap()
+            .as_str(),
+        r"C:\Temp\Shared"
+    );
+    assert_eq!(
+        file.file_len_variant(path(r"c:B.TXT")).unwrap().as_i32(),
+        Some(6)
+    );
+    assert_eq!(
+        file.file_len_variant(path(r"..\A.txt")).unwrap().as_i32(),
+        Some(12)
+    );
+    let blocked = file
+        .file_copy_variant(path(r"b.txt"), path(r"no.txt"))
+        .unwrap_err();
+    assert_eq!(blocked.host_error_code, Some(75));
+    assert!(!restricted.join("no.txt").exists());
+    file.file_copy_variant(path(r"b.txt"), path(r"..\yes.txt"))
+        .unwrap();
+    assert_eq!(fs::read(temp.join("yes.txt")).unwrap(), b"nested");
+    fs::remove_dir_all(&root).unwrap();
 }

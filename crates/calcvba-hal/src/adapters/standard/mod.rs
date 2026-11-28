@@ -1012,6 +1012,7 @@ impl StandardHostServices {
         capability: CapabilityId,
         op: &'static str,
         field: &'static str,
+        write: bool,
     ) -> HalResult<PathBuf> {
         match value.vtype() {
             VarType::String => value
@@ -1024,7 +1025,7 @@ impl StandardHostServices {
                         format!("{field} has an invalid BSTR payload"),
                     )
                 })
-                .and_then(|path| self.map_path(&path.as_str(), capability, op)),
+                .and_then(|path| self.map_path(&path.as_str(), capability, op, write)),
             _ => self
                 .variant_to_i32(value, capability, op, field)
                 .map(|token| self.host_path_from_token(token)),

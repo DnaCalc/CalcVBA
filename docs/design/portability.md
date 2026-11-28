@@ -179,6 +179,8 @@ Strict load diagnostics name the construct, location, host, and reason. The stat
 
 On a non-Windows native host, `HostPolicy::windows_faithful` enables faithful runtime handling for `Shell` and Windows DLL calls. The CLI sets it when selecting `windows-faithful`. An embedder can supply `HostPolicy::windows_shell_commands` for the project. Each entry maps one exact VBA command line to an explicit executable and argument list. An absent mapping raises the file-not-found error. Process policy still applies to mapped commands.
 
+`HostPolicy::with_windows_drive_mount` maps a drive-absolute prefix such as `C:\Temp` to a host directory with `Read` or `ReadWrite` access. The longest case-insensitive prefix wins after Windows path components are resolved, including `..` and drive-relative paths. `CurDir` retains the Windows path. The reverse map uses the deepest matching host directory. Named UNC root bindings remain available through `with_windows_unc_root`. Mapped `Dir` and `Kill` diagnose a wildcard collision with both filenames before `Kill` can remove a match.
+
 ## 6. Shims and models
 
 | Shim or model | Hosts | Design |

@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     error::{HalError, HalResult},
-    model::CapabilityId,
+    model::{CapabilityId, HostPolicy, WindowsMountAccess},
 };
 
 use super::StandardHostServices;
@@ -37,16 +37,17 @@ impl WindowsPaths {
 
     fn resolve(
         &self,
-        roots: &BTreeMap<char, PathBuf>,
-        shares: &BTreeMap<(String, String), PathBuf>,
+        policy: &HostPolicy,
         text: &str,
+        write: bool,
     ) -> io::Result<(Option<char>, PathBuf, PathBuf)> {
         let normalized = text.replace('\\', "/");
-        let (drive, root, path) = if let Some(unc) = normalized.strip_prefix("//") {
+        let (drive, share, path) = if let Some(unc) = normalized.strip_prefix("//") {
             let mut parts = unc.splitn(3, '/');
             let server = parts.next().unwrap_or_default();
             let share = parts.next().unwrap_or_default();
-            let root = shares
+            let root = policy
+                .windows_unc_roots
                 .get(&(server.to_lowercase(), share.to_lowercase()))
                 .ok_or_else(|| {
                     io::Error::new(
@@ -54,7 +55,7 @@ impl WindowsPaths {
                         format!("UNC share {server}/{share} is unmapped"),
                     )
                 })?;
-            (None, mapped_root(root)?, parts.next().unwrap_or_default())
+            (None, Some(root), parts.next().unwrap_or_default())
         } else {
             let (drive, path) = match normalized.as_bytes() {
                 [letter, b':', ..] if letter.is_ascii_alphabetic() => {
@@ -62,7 +63,7 @@ impl WindowsPaths {
                 }
                 _ => (self.drive, normalized.as_str()),
             };
-            (Some(drive), resolve_root(roots, drive)?, path)
+            (Some(drive), None, path)
         };
         let mut segments: Vec<String> = if let Some(drive) = drive
             && !path.starts_with('/')
@@ -90,10 +91,42 @@ impl WindowsPaths {
             }
         }
 
+        let mount =
+            drive.and_then(|drive| {
+                policy
+                    .windows_drive_mounts
+                    .iter()
+                    .filter(|mount| mount.drive == drive && mount.prefix.len() <= segments.len())
+                    .filter(|mount| {
+                        mount.prefix.iter().zip(&segments).all(|(prefix, segment)| {
+                            prefix.to_lowercase() == segment.to_lowercase()
+                        })
+                    })
+                    .max_by_key(|mount| mount.prefix.len())
+            });
+        let (root, prefix) = if let Some(mount) = mount {
+            if write && mount.access == WindowsMountAccess::Read {
+                return Err(io::Error::new(
+                    io::ErrorKind::ReadOnlyFilesystem,
+                    "Windows mount is read-only",
+                ));
+            }
+            (mapped_root(&mount.root)?, mount.prefix.as_slice())
+        } else if let Some(share) = share {
+            (mapped_root(share)?, &[][..])
+        } else {
+            (
+                resolve_root(
+                    &policy.windows_drive_roots,
+                    drive.expect("drive path has a drive"),
+                )?,
+                &[][..],
+            )
+        };
         let mut absolute = root.clone();
-        let mut relative = PathBuf::new();
+        let mut relative: PathBuf = prefix.iter().collect();
         let last_segment = segments.len().saturating_sub(1);
-        for (index, name) in segments.into_iter().enumerate() {
+        for (index, name) in segments.into_iter().enumerate().skip(prefix.len()) {
             if name.contains(['*', '?']) {
                 if index != last_segment {
                     return Err(io::Error::new(
@@ -189,6 +222,7 @@ impl StandardHostServices {
         !cfg!(windows)
             && self.native_fs_enabled()
             && !(self.policy.windows_drive_roots.is_empty()
+                && self.policy.windows_drive_mounts.is_empty()
                 && self.policy.windows_unc_roots.is_empty())
     }
 
@@ -197,17 +231,14 @@ impl StandardHostServices {
         text: &str,
         capability: CapabilityId,
         operation: &'static str,
+        write: bool,
     ) -> HalResult<PathBuf> {
         if !self.uses_windows_paths() || text.is_empty() {
             return Ok(PathBuf::from(text));
         }
         self.windows_paths
             .borrow()
-            .resolve(
-                &self.policy.windows_drive_roots,
-                &self.policy.windows_unc_roots,
-                text,
-            )
+            .resolve(&self.policy, text, write)
             .map(|(_, path, _)| path)
             .map_err(|error| self.windows_path_error(capability, operation, error))
     }
@@ -215,9 +246,7 @@ impl StandardHostServices {
     pub(super) fn mapped_cur_dir(&self, letter: Option<char>) -> HalResult<String> {
         let state = self.windows_paths.borrow();
         let drive = letter.map_or(state.drive, |c| c.to_ascii_uppercase());
-        resolve_root(&self.policy.windows_drive_roots, drive).map_err(|error| {
-            self.windows_path_error(CapabilityId::FileSystemIo, "curdir", error)
-        })?;
+        self.require_mapped_drive(drive, "curdir")?;
         let suffix = state
             .current_directory(drive)
             .to_string_lossy()
@@ -228,11 +257,7 @@ impl StandardHostServices {
     pub(super) fn mapped_ch_dir(&self, text: &str) -> HalResult<()> {
         let mut state = self.windows_paths.borrow_mut();
         let (drive, path, relative) = state
-            .resolve(
-                &self.policy.windows_drive_roots,
-                &self.policy.windows_unc_roots,
-                text,
-            )
+            .resolve(&self.policy, text, false)
             .map_err(|error| self.windows_path_error(CapabilityId::FileSystemIo, "chdir", error))?;
         if !path.is_dir() {
             return Err(self.windows_path_error(
@@ -260,11 +285,23 @@ impl StandardHostServices {
 
     pub(super) fn mapped_ch_drive(&self, letter: char) -> HalResult<()> {
         let drive = letter.to_ascii_uppercase();
-        resolve_root(&self.policy.windows_drive_roots, drive).map_err(|error| {
-            self.windows_path_error(CapabilityId::FileSystemIo, "chdrive", error)
-        })?;
+        self.require_mapped_drive(drive, "chdrive")?;
         self.windows_paths.borrow_mut().drive = drive;
         Ok(())
+    }
+
+    fn require_mapped_drive(&self, drive: char, operation: &'static str) -> HalResult<()> {
+        if self
+            .policy
+            .windows_drive_mounts
+            .iter()
+            .any(|mount| mount.drive == drive && mapped_root(&mount.root).is_ok())
+        {
+            return Ok(());
+        }
+        resolve_root(&self.policy.windows_drive_roots, drive)
+            .map(|_| ())
+            .map_err(|error| self.windows_path_error(CapabilityId::FileSystemIo, operation, error))
     }
 
     #[cfg(not(windows))]
@@ -284,14 +321,28 @@ impl StandardHostServices {
         self.policy
             .windows_drive_roots
             .iter()
-            .filter_map(|(&drive, path)| {
+            .map(|(&drive, root)| (drive, &[][..], root))
+            .chain(
+                self.policy
+                    .windows_drive_mounts
+                    .iter()
+                    .map(|mount| (mount.drive, mount.prefix.as_slice(), &mount.root)),
+            )
+            .filter_map(|(drive, prefix, path)| {
                 let root = mapped_root(path).ok()?;
                 let suffix = absolute.strip_prefix(&root).ok()?;
-                Some((root.components().count(), drive, suffix))
+                Some((root.components().count(), drive, prefix, suffix))
             })
-            .max_by_key(|(depth, _, _)| *depth)
-            .map(|(_, drive, suffix)| {
-                format!("{drive}:\\{}", suffix.to_string_lossy().replace('/', "\\"))
+            .max_by_key(|(depth, _, prefix, _)| (*depth, prefix.len()))
+            .map(|(_, drive, prefix, suffix)| {
+                let mut relative: PathBuf = prefix.iter().collect();
+                if !suffix.as_os_str().is_empty() {
+                    relative.push(suffix);
+                }
+                format!(
+                    "{drive}:\\{}",
+                    relative.to_string_lossy().replace('/', "\\")
+                )
             })
     }
 
@@ -329,7 +380,7 @@ impl StandardHostServices {
         Some(format!("{drive}:\\"))
     }
 
-    fn windows_path_error(
+    pub(super) fn windows_path_error(
         &self,
         capability: CapabilityId,
         operation: &'static str,

@@ -91,7 +91,12 @@ impl BuiltinObject {
                 let value = argument(host, args, name)?;
                 let path = variant_to_vba_string(value).map_err(|_| fault(host, 13))?;
                 let found = host
-                    .map_path(&path.as_str(), CapabilityId::FileSystemIo, "file_exists")
+                    .map_path(
+                        &path.as_str(),
+                        CapabilityId::FileSystemIo,
+                        "file_exists",
+                        false,
+                    )
                     .ok()
                     .and_then(|path| std::fs::metadata(path).ok())
                     .is_some_and(|entry| {

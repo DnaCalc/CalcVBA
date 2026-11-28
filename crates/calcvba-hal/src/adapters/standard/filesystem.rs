@@ -870,7 +870,8 @@ impl FileSystemHal for StandardHostServices {
                 })?
             };
             let host_path = if self.native_fs_enabled() {
-                let host_path = self.map_path(&path_text.as_str(), capability, "open")?;
+                let host_path =
+                    self.map_path(&path_text.as_str(), capability, "open", mode != 0)?;
                 self.require_file_parent(&host_path, "open")?;
                 Some(host_path)
             } else {
@@ -1245,10 +1246,15 @@ impl FileSystemHal for StandardHostServices {
         };
         if path_text.as_str().contains('*') || path_text.as_str().contains('?') {
             if self.native_fs_enabled() {
-                let wildcard_path = self.map_path(&path_text.as_str(), capability, "kill")?;
+                let wildcard_path = self.map_path(&path_text.as_str(), capability, "kill", true)?;
                 let matched_paths =
                     expand_host_wildcard_paths(&wildcard_path, self.uses_windows_paths())
                         .map_err(|err| {
+                            if self.uses_windows_paths()
+                                && err.kind() == std::io::ErrorKind::AlreadyExists
+                            {
+                                return self.windows_path_error(capability, "kill", err);
+                            }
                             HalError::adapter_fault(
                                 self.profile,
                                 capability,
@@ -1279,7 +1285,7 @@ impl FileSystemHal for StandardHostServices {
             return Ok(Variant::from_i32(0));
         }
         if self.native_fs_enabled() {
-            let host_path = self.map_path(&path_text.as_str(), capability, "kill")?;
+            let host_path = self.map_path(&path_text.as_str(), capability, "kill", true)?;
             self.kill_host_file(&host_path)?;
         }
         Ok(Variant::from_i32(0))
@@ -1304,8 +1310,8 @@ impl FileSystemHal for StandardHostServices {
         if self.native_fs_enabled() {
             // VBA `MkDir` creates a single directory (error 75 if it already
             // exists / the parent is missing); mirror with a non-recursive create.
-            fs::create_dir(self.map_path(&path_text.as_str(), capability, "mkdir")?).map_err(
-                |err| {
+            fs::create_dir(self.map_path(&path_text.as_str(), capability, "mkdir", true)?)
+                .map_err(|err| {
                     HalError::adapter_fault(
                         self.profile,
                         capability,
@@ -1313,8 +1319,7 @@ impl FileSystemHal for StandardHostServices {
                         format!("failed to create directory {path_text}: {err}"),
                     )
                     .with_host_error_code(directory_error_code(&err))
-                },
-            )?;
+                })?;
         }
         Ok(Variant::from_i32(0))
     }
@@ -1338,8 +1343,8 @@ impl FileSystemHal for StandardHostServices {
         if self.native_fs_enabled() {
             // VBA `RmDir` removes an empty directory; `remove_dir` (non-recursive)
             // matches (it errors if the directory is non-empty or missing).
-            fs::remove_dir(self.map_path(&path_text.as_str(), capability, "rmdir")?).map_err(
-                |err| {
+            fs::remove_dir(self.map_path(&path_text.as_str(), capability, "rmdir", true)?)
+                .map_err(|err| {
                     HalError::adapter_fault(
                         self.profile,
                         capability,
@@ -1347,8 +1352,7 @@ impl FileSystemHal for StandardHostServices {
                         format!("failed to remove directory {path_text}: {err}"),
                     )
                     .with_host_error_code(directory_error_code(&err))
-                },
-            )?;
+                })?;
         }
         Ok(Variant::from_i32(0))
     }
@@ -2033,7 +2037,7 @@ impl FileSystemHal for StandardHostServices {
                 self.mapped_ch_dir(&text.as_str())?;
                 return Ok(Variant::from_i32(0));
             }
-            let dir = self.variant_to_path(&path, capability, "chdir", "path")?;
+            let dir = self.variant_to_path(&path, capability, "chdir", "path", false)?;
             std::env::set_current_dir(&dir).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
@@ -2053,7 +2057,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "filelen"));
         }
         if self.native_fs_enabled() {
-            let p = self.variant_to_path(&path, capability, "filelen", "path")?;
+            let p = self.variant_to_path(&path, capability, "filelen", "path", false)?;
             let len = fs::metadata(&p).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
@@ -2087,8 +2091,8 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.denied(capability, "filecopy"));
         }
         if self.native_fs_enabled() {
-            let src = self.variant_to_path(&source, capability, "filecopy", "source")?;
-            let dst = self.variant_to_path(&dest, capability, "filecopy", "destination")?;
+            let src = self.variant_to_path(&source, capability, "filecopy", "source", false)?;
+            let dst = self.variant_to_path(&dest, capability, "filecopy", "destination", true)?;
             let fault = |code| {
                 HalError::adapter_fault(self.profile, capability, "filecopy", "file copy failed")
                     .with_host_error_code(code)
@@ -2152,7 +2156,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "getattr"));
         }
         if self.native_fs_enabled() {
-            let p = self.variant_to_path(&path, capability, "getattr", "path")?;
+            let p = self.variant_to_path(&path, capability, "getattr", "path", false)?;
             let bits = path_attribute_bits(&p, self.uses_windows_paths()).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
@@ -2197,7 +2201,7 @@ impl FileSystemHal for StandardHostServices {
             ));
         }
         if self.native_fs_enabled() {
-            let p = self.variant_to_path(&path, capability, "setattr", "path")?;
+            let p = self.variant_to_path(&path, capability, "setattr", "path", true)?;
             apply_file_attributes(&p, requested, self.uses_windows_paths()).map_err(|err| {
                 HalError::adapter_fault(
                     self.profile,
@@ -2264,7 +2268,7 @@ impl FileSystemHal for StandardHostServices {
             return Err(self.unsupported(capability, "filedatetime"));
         }
         if self.native_fs_enabled() {
-            let p = self.variant_to_path(&path, capability, "filedatetime", "path")?;
+            let p = self.variant_to_path(&path, capability, "filedatetime", "path", false)?;
             // A bare directory name is accepted, but its trailing separator is
             // not (Excel P_FileDateTime.14).
             if p.as_os_str().to_string_lossy().ends_with(['\\', '/']) {
@@ -2319,8 +2323,8 @@ impl FileSystemHal for StandardHostServices {
         // Real rename when host filesystem access is enabled; otherwise the
         // deterministic lane has no host file to move (a documented no-op).
         if self.native_fs_enabled() {
-            let old = self.variant_to_path(&old_path, capability, "name", "old")?;
-            let mut new = self.variant_to_path(&new_path, capability, "name", "new")?;
+            let old = self.variant_to_path(&old_path, capability, "name", "old", true)?;
+            let mut new = self.variant_to_path(&new_path, capability, "name", "new", true)?;
             if self.uses_windows_paths() && fs::symlink_metadata(&new).is_ok() {
                 // The mapped lookup resolves both spellings to the same entry.
                 // Keep the requested basename for the actual case-only rename.
@@ -2713,12 +2717,24 @@ fn expand_host_wildcard_components(
                 } else {
                     base.clone()
                 };
+                let mut names = BTreeMap::new();
                 for entry in fs::read_dir(&dir)? {
                     let entry = entry?;
                     let entry_path = entry.path();
                     let entry_name = entry.file_name();
                     if !wildcard_match(&text, &entry_name.to_string_lossy(), case_insensitive) {
                         continue;
+                    }
+                    if case_insensitive
+                        && let Some(first) = names.insert(
+                            entry_name.to_string_lossy().to_lowercase(),
+                            entry_name.clone(),
+                        )
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            format!("both {first:?} and {entry_name:?} match {text:?}"),
+                        ));
                     }
                     if components.len() > 1 && !entry.file_type()?.is_dir() {
                         continue;

@@ -151,6 +151,8 @@ pub struct HostPolicy {
     pub windows_shell_commands: std::collections::BTreeMap<String, ShellCommand>,
     /// Host roots for Windows-dialect drive letters. Empty uses host paths.
     pub windows_drive_roots: std::collections::BTreeMap<char, std::path::PathBuf>,
+    /// Windows drive prefixes with explicit access to a host directory.
+    pub windows_drive_mounts: Vec<WindowsDriveMount>,
     /// Host roots for named UNC server/share pairs.
     pub windows_unc_roots: std::collections::BTreeMap<(String, String), std::path::PathBuf>,
     /// Optional explicit ANSI code page override (e.g. 1252, 1251, 932).
@@ -170,6 +172,20 @@ pub struct ShellCommand {
     pub arguments: Vec<std::ffi::OsString>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsMountAccess {
+    Read,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsDriveMount {
+    pub(crate) drive: char,
+    pub(crate) prefix: Vec<String>,
+    pub(crate) root: std::path::PathBuf,
+    pub(crate) access: WindowsMountAccess,
+}
+
 impl HostPolicy {
     /// Enable the native host services for ordinary Office-style execution.
     pub fn native() -> Self {
@@ -181,6 +197,7 @@ impl HostPolicy {
             windows_faithful: false,
             windows_shell_commands: Default::default(),
             windows_drive_roots: Default::default(),
+            windows_drive_mounts: Vec::new(),
             windows_unc_roots: Default::default(),
             codepage: None,
             allow_dynamic_link: true,
@@ -206,6 +223,52 @@ impl HostPolicy {
         self.windows_drive_roots
             .insert(drive.to_ascii_uppercase(), root.into());
         self
+    }
+
+    /// Bind a drive-absolute Windows path to a directory. The longest matching
+    /// prefix controls both the destination and its access.
+    pub fn with_windows_drive_mount(
+        mut self,
+        windows: &str,
+        root: impl Into<std::path::PathBuf>,
+        access: WindowsMountAccess,
+    ) -> Result<Self, &'static str> {
+        let Some((letter, path)) = windows.split_once(':') else {
+            return Err("expected an absolute Windows drive prefix");
+        };
+        let [drive] = letter.as_bytes() else {
+            return Err("expected a Windows drive letter");
+        };
+        if !drive.is_ascii_alphabetic() || !path.starts_with(['\\', '/']) {
+            return Err("expected an absolute Windows drive prefix");
+        }
+        let drive = char::from(drive.to_ascii_uppercase());
+        let prefix: Vec<_> = path
+            .split(['\\', '/'])
+            .filter(|part| !part.is_empty())
+            .collect();
+        if prefix.iter().any(|part| {
+            matches!(*part, "." | "..") || part.contains([':', '*', '?', '<', '>', '"', '|', '\0'])
+        }) {
+            return Err("invalid Windows mount component");
+        }
+        let mount = WindowsDriveMount {
+            drive,
+            prefix: prefix.iter().map(|part| (*part).to_owned()).collect(),
+            root: root.into(),
+            access,
+        };
+        self.windows_drive_mounts.retain(|existing| {
+            existing.drive != drive
+                || existing.prefix.len() != prefix.len()
+                || !existing
+                    .prefix
+                    .iter()
+                    .zip(&prefix)
+                    .all(|(left, right)| left.to_lowercase() == right.to_lowercase())
+        });
+        self.windows_drive_mounts.push(mount);
+        Ok(self)
     }
 
     pub fn with_windows_unc_root(
@@ -250,6 +313,7 @@ impl Default for HostPolicy {
             windows_faithful: false,
             windows_shell_commands: Default::default(),
             windows_drive_roots: Default::default(),
+            windows_drive_mounts: Vec::new(),
             windows_unc_roots: Default::default(),
             codepage: None,
             allow_dynamic_link: false,

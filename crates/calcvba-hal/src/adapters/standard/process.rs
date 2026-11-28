@@ -617,7 +617,7 @@ impl ProcessEnvHal for StandardHostServices {
             // only the omitted pathname continues the previous search.
             let target = if path.as_bstr().is_some_and(|text| text.is_empty()) {
                 if self.uses_windows_paths() {
-                    self.map_path("*", capability, "dir")?
+                    self.map_path("*", capability, "dir", false)?
                 } else {
                     std::env::current_dir()
                         .map(|dir| dir.join("*"))
@@ -631,7 +631,7 @@ impl ProcessEnvHal for StandardHostServices {
                         })?
                 }
             } else {
-                self.variant_to_path(&path, capability, "dir", "path")?
+                self.variant_to_path(&path, capability, "dir", "path", false)?
             };
             let attrs = self
                 .variant_to_i32(&attrs, capability, "dir", "attributes")
@@ -644,6 +644,9 @@ impl ProcessEnvHal for StandardHostServices {
                 self.uses_windows_paths(),
             )
             .map_err(|err| {
+                if self.uses_windows_paths() && err.kind() == std::io::ErrorKind::AlreadyExists {
+                    return self.windows_path_error(capability, "dir", err);
+                }
                 HalError::adapter_fault(
                     self.profile,
                     capability,

@@ -31,9 +31,11 @@ static POLICY_MODE: std::sync::OnceLock<calcvba_hal::PolicyMode> = std::sync::On
 static PORTABILITY_MODE: std::sync::OnceLock<calcvba_symbol::portability::Mode> =
     std::sync::OnceLock::new();
 static CODEPAGE: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+static WINDOWS_ENV: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
 fn extract_host_flags(args: Vec<String>) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
+    let mut windows_env = Vec::new();
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         if arg == "--policy" {
@@ -56,6 +58,13 @@ fn extract_host_flags(args: Vec<String>) -> Vec<String> {
                 std::process::exit(2);
             };
             let _ = PORTABILITY_MODE.set(mode);
+        } else if arg == "--pass-env" {
+            let name = iter.next().unwrap_or_default();
+            if name.is_empty() || name.contains(['=', '\0']) {
+                eprintln!("calcvba-cli: --pass-env takes an environment variable name");
+                std::process::exit(2);
+            }
+            windows_env.push(name);
         } else if arg == "--codepage" {
             let value = iter.next().unwrap_or_default();
             let Ok(cp) = value.parse::<u16>() else {
@@ -71,6 +80,7 @@ fn extract_host_flags(args: Vec<String>) -> Vec<String> {
             out.push(arg);
         }
     }
+    let _ = WINDOWS_ENV.set(windows_env);
     out
 }
 
@@ -103,6 +113,11 @@ fn apply_policy(engine: &mut Engine, project_root: Option<&Path>, workbook_proje
     }
     if let Some(cp) = CODEPAGE.get().copied() {
         engine.set_host_policy(engine.host_policy().clone().with_codepage(cp));
+    }
+    if let Some(names) = WINDOWS_ENV.get().filter(|names| !names.is_empty()) {
+        let mut policy = engine.host_policy().clone();
+        policy.windows_environment_passthrough.clone_from(names);
+        engine.set_host_policy(policy);
     }
     if let Some(mode) = POLICY_MODE.get().copied() {
         engine.wrap_host_services(|inner| {
@@ -258,7 +273,7 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "usage:\n  calcvba-cli run <source.bas> [--backend vm3|jit] [--dump-values]\n  calcvba-cli run-project [path] [--entry Module.Procedure] [--backend vm3|jit]\n  calcvba-cli build <project> --target OxImage|NativeLibrary|Exe|ComExe|ComServer --out-dir <dir>\n  calcvba-cli run-image <project.oxi> [--backend vm3|jit]\n  calcvba-cli triage <project|source.bas>   (predicted capabilities as JSON)
-  calcvba-cli check --portability [--host <host>] <project|source.bas|workbook>\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --policy safe|full  --portability-mode windows-faithful|strict|native  --dump-bootstrap  --diagnostic-format human|json"
+  calcvba-cli check --portability [--host <host>] <project|source.bas|workbook>\n  calcvba-cli inspect-vba <workbook>\n  calcvba-cli export-vba <workbook> --out-dir <new-folder>\n  calcvba-cli write-vba <workbook> --project <project.basproj> --out <new-workbook>\n\n  --profile <id>  --policy safe|full  --portability-mode windows-faithful|strict|native  --pass-env NAME  --dump-bootstrap  --diagnostic-format human|json"
     );
 }
 

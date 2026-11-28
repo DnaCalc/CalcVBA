@@ -181,6 +181,8 @@ On a non-Windows native host, `HostPolicy::windows_faithful` enables faithful ru
 
 `HostPolicy::with_windows_drive_mount` maps a drive-absolute prefix such as `C:\Temp` to a host directory with `Read` or `ReadWrite` access. The longest case-insensitive prefix wins after Windows path components are resolved, including `..` and drive-relative paths. `CurDir` retains the Windows path. The reverse map uses the deepest matching host directory. Named UNC root bindings remain available through `with_windows_unc_root`. Mapped `Dir` and `Kill` diagnose a wildcard collision with both filenames before `Kill` can remove a match.
 
+Off Windows, the faithful `Environ` table supplies the Windows persona. It reads user and machine identity from the host and resolves file-related aliases through configured mounts. Other host variables require an entry in `HostPolicy::windows_environment_passthrough` or a CLI `--pass-env NAME` option. Repeat the option to set the order of forwarded entries before synthesized entries. Names are matched case-insensitively in VBA, and indexed lookups are one-based. A reverse path must resolve back to the same host location, including when one mount shadows a directory in another mount.
+
 ## 6. Shims and models
 
 | Shim or model | Hosts | Design |

@@ -48,6 +48,10 @@ End Sub
                 "linux-stdio",
                 "--portability-mode",
                 "windows-faithful",
+                "--pass-env",
+                "Zfirst",
+                "--pass-env",
+                "Asecond",
             ])
             .arg(&source)
             .current_dir(&root)
@@ -132,6 +136,10 @@ End Sub
                 "linux-stdio",
                 "--portability-mode",
                 "windows-faithful",
+                "--pass-env",
+                "CAFÉ_VAR",
+                "--pass-env",
+                "Straße",
             ])
             .arg(&source)
             .current_dir(&root)
@@ -150,4 +158,50 @@ End Sub
             "{backend}"
         );
     }
+}
+
+#[test]
+fn faithful_environment_synthesizes_windows_names_and_requires_pass_through() {
+    let root = std::env::temp_dir().join(format!("calcvba-environ-persona-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let source = root.join("main.bas");
+    fs::write(
+        &source,
+        r#"Public Sub Main()
+    Debug.Print "[" & Environ$("px1_private_marker") & "]|" & Environ$("OS") & "|" & Environ$("PROCESSOR_ARCHITECTURE")
+End Sub
+"#,
+    )
+    .unwrap();
+
+    for backend in ["vm3", "jit"] {
+        for explicit in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"));
+            command
+                .env_clear()
+                .env("PX1_PRIVATE_MARKER", "fixture-marker");
+            command.args([
+                "run",
+                "--backend",
+                backend,
+                "--profile",
+                "linux-stdio",
+                "--portability-mode",
+                "windows-faithful",
+            ]);
+            if explicit {
+                command.args(["--pass-env", "PX1_PRIVATE_MARKER"]);
+            }
+            let output = command.arg(&source).output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{backend}: {stderr}");
+            let value = if explicit { "fixture-marker" } else { "" };
+            assert_eq!(
+                stderr.trim(),
+                format!("[{value}]|Windows_NT|AMD64"),
+                "{backend}"
+            );
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
 }

@@ -149,6 +149,8 @@ pub struct HostPolicy {
     pub windows_faithful: bool,
     /// Exact VBA Shell command lines mapped to an executable and fixed argument list.
     pub windows_shell_commands: std::collections::BTreeMap<String, ShellCommand>,
+    /// Host variables explicitly exposed to a Windows-dialect project off Windows.
+    pub windows_environment_passthrough: Vec<String>,
     /// Host roots for Windows-dialect drive letters. Empty uses host paths.
     pub windows_drive_roots: std::collections::BTreeMap<char, std::path::PathBuf>,
     /// Windows drive prefixes with explicit access to a host directory.
@@ -196,6 +198,7 @@ impl HostPolicy {
             allow_filesystem_mutation: true,
             windows_faithful: false,
             windows_shell_commands: Default::default(),
+            windows_environment_passthrough: Vec::new(),
             windows_drive_roots: Default::default(),
             windows_drive_mounts: Vec::new(),
             windows_unc_roots: Default::default(),
@@ -312,6 +315,7 @@ impl Default for HostPolicy {
             allow_filesystem_mutation: false,
             windows_faithful: false,
             windows_shell_commands: Default::default(),
+            windows_environment_passthrough: Vec::new(),
             windows_drive_roots: Default::default(),
             windows_drive_mounts: Vec::new(),
             windows_unc_roots: Default::default(),

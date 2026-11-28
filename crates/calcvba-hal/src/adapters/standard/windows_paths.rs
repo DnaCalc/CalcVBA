@@ -318,6 +318,7 @@ impl StandardHostServices {
     #[cfg(not(windows))]
     pub(super) fn windows_path_for_host(&self, path: &Path) -> Option<String> {
         let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let state = self.windows_paths.borrow();
         self.policy
             .windows_drive_roots
             .iter()
@@ -331,19 +332,20 @@ impl StandardHostServices {
             .filter_map(|(drive, prefix, path)| {
                 let root = mapped_root(path).ok()?;
                 let suffix = absolute.strip_prefix(&root).ok()?;
-                Some((root.components().count(), drive, prefix, suffix))
-            })
-            .max_by_key(|(depth, _, prefix, _)| (*depth, prefix.len()))
-            .map(|(_, drive, prefix, suffix)| {
                 let mut relative: PathBuf = prefix.iter().collect();
                 if !suffix.as_os_str().is_empty() {
                     relative.push(suffix);
                 }
-                format!(
+                let windows = format!(
                     "{drive}:\\{}",
                     relative.to_string_lossy().replace('/', "\\")
-                )
+                );
+                let (_, resolved, _) = state.resolve(&self.policy, &windows, false).ok()?;
+                let resolved = fs::canonicalize(&resolved).unwrap_or(resolved);
+                (resolved == absolute).then_some((root.components().count(), prefix.len(), windows))
             })
+            .max_by_key(|(depth, prefix, _)| (*depth, *prefix))
+            .map(|(_, _, windows)| windows)
     }
 
     #[cfg(not(windows))]
@@ -394,5 +396,31 @@ impl StandardHostServices {
         };
         HalError::adapter_fault(self.profile, capability, operation, error.to_string())
             .with_host_error_code(code)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use crate::model::HalProfileId;
+
+    #[test]
+    fn reversed_environment_paths_skip_shadowed_directories() {
+        let root = std::env::temp_dir().join(format!("calcvba-env-shadow-{}", std::process::id()));
+        let private_drive = root.join("private");
+        let shadowed = private_drive.join("Temp");
+        let mounted = root.join("mounted");
+        fs::create_dir_all(&shadowed).unwrap();
+        fs::create_dir_all(&mounted).unwrap();
+        let policy = HostPolicy::native()
+            .with_windows_drive_root('C', &private_drive)
+            .with_windows_drive_mount(r"C:\Temp", &mounted, WindowsMountAccess::ReadWrite)
+            .unwrap();
+        let host = StandardHostServices::new(HalProfileId::Linux, policy);
+        let from_shadowed = host.windows_path_for_host(&shadowed);
+        let from_mounted = host.windows_path_for_host(&mounted);
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(from_shadowed, None);
+        assert_eq!(from_mounted.as_deref(), Some(r"C:\Temp"));
     }
 }

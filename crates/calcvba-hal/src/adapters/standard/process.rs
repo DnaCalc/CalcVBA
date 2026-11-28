@@ -512,7 +512,7 @@ impl ProcessEnvHal for StandardHostServices {
             }
             if self.native_process_enabled() || self.wasi_native() {
                 #[cfg(not(windows))]
-                if self.uses_windows_paths() {
+                if self.policy.windows_faithful || self.uses_windows_paths() {
                     let folded_name = fold_env_name(name);
                     let value = self
                         .windows_environment()
@@ -556,7 +556,7 @@ impl ProcessEnvHal for StandardHostServices {
         }
         if self.native_process_enabled() || self.wasi_native() {
             #[cfg(not(windows))]
-            let variables: Vec<_> = if self.uses_windows_paths() {
+            let variables: Vec<_> = if self.policy.windows_faithful || self.uses_windows_paths() {
                 self.windows_environment()
             } else {
                 std::env::vars_os().collect()
@@ -762,7 +762,18 @@ impl StandardHostServices {
     #[cfg(not(windows))]
     fn windows_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         use std::{env, path::PathBuf};
-        let mut vars: Vec<_> = env::vars_os().collect();
+        let mut vars: Vec<_> = if self.policy.windows_faithful {
+            let mut seen = std::collections::BTreeSet::new();
+            self.policy
+                .windows_environment_passthrough
+                .iter()
+                .filter_map(|name| env::var_os(name).map(|value| (name, value)))
+                .filter(|(name, _)| seen.insert(fold_env_name(name)))
+                .map(|(name, value)| (name.into(), value))
+                .collect()
+        } else {
+            env::vars_os().collect()
+        };
         let username = env::var_os("USER").or_else(|| env::var_os("LOGNAME"));
         let username_str = username.as_deref().and_then(|value| value.to_str());
         let temp = self.windows_temp_dir();
@@ -796,6 +807,34 @@ impl StandardHostServices {
                 .ok()
                 .map(|name| name.trim_end().into())
         });
+        let (home_drive, home_path) = user_profile
+            .as_deref()
+            .and_then(|path| path.split_once(':'))
+            .map(|(drive, path)| (Some(format!("{drive}:").into()), Some(path.into())))
+            .unwrap_or_default();
+        let local_app_data = self
+            .policy
+            .windows_faithful
+            .then(|| {
+                home.as_ref()
+                    .map(|path| path.join(".local/share"))
+                    .as_deref()
+                    .and_then(|path| self.windows_path_for_host(path))
+                    .or_else(|| match username_str {
+                        Some(user) => self.fallback_windows_dir(&[
+                            &["Users", user, "AppData", "Local"],
+                            &["AppData", "Local"],
+                        ]),
+                        None => self.fallback_windows_dir(&[&["AppData", "Local"]]),
+                    })
+            })
+            .flatten();
+        let public = self
+            .policy
+            .windows_faithful
+            .then(|| self.fallback_windows_dir(&[&["Users", "Public"]]))
+            .flatten();
+        let user_domain = hostname.clone();
         let aliases = [
             ("TEMP", temp.clone().map(Into::into)),
             ("TMP", temp.map(Into::into)),
@@ -804,7 +843,30 @@ impl StandardHostServices {
             ("COMPUTERNAME", hostname),
             ("USERNAME", username),
         ];
-        for (key, value) in aliases {
+        let extra = [
+            ("HOMEDRIVE", home_drive),
+            ("HOMEPATH", home_path),
+            ("LOCALAPPDATA", local_app_data.map(Into::into)),
+            ("PUBLIC", public.map(Into::into)),
+            ("USERDOMAIN", user_domain),
+            ("OS", Some("Windows_NT".into())),
+            ("PROCESSOR_ARCHITECTURE", Some("AMD64".into())),
+            (
+                "NUMBER_OF_PROCESSORS",
+                std::thread::available_parallelism()
+                    .ok()
+                    .map(|count| count.to_string().into()),
+            ),
+            ("SYSTEMROOT", Some(r"C:\Windows".into())),
+            ("WINDIR", Some(r"C:\Windows".into())),
+            ("PROGRAMFILES", Some(r"C:\Program Files".into())),
+            ("COMSPEC", Some(r"C:\Windows\System32\cmd.exe".into())),
+            ("PATH", Some(r"C:\Windows\System32;C:\Windows".into())),
+        ];
+        for (key, value) in aliases
+            .into_iter()
+            .chain(extra.into_iter().filter(|_| self.policy.windows_faithful))
+        {
             let folded_key = fold_env_name(key);
             if let Some(value) = value
                 && !vars.iter().any(|(old, _)| {

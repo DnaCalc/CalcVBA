@@ -15,7 +15,7 @@ use calcvba_com::{
     platform::portable::PortableObjectFactory,
 };
 use calcvba_hal::{
-    Capability, CapabilitySet, HostOutputChannel, HostPolicy, HostServices, PolicyHost,
+    Capability, CapabilitySet, HostOutputChannel, HostPolicy, HostServices, PolicyHost, PolicyMode,
     adapters::builder::HostBuilder, callbacks::HostCallbacks, install_thread_output_tap,
 };
 use calcvba_oxir::OxProgram;
@@ -244,6 +244,7 @@ fn observe(
     };
     let callbacks = Arc::new(RecordedOutput);
     let cells = CellRecorder::default();
+    let guarded = PolicyMode::Safe.denied_capabilities();
     let host = match mode {
         HostMode::Files(scratch) => {
             policy.deterministic_mode = false;
@@ -254,7 +255,7 @@ fn observe(
                 .callbacks(callbacks)
                 .build();
             let files = CapabilitySet::of(&[Capability::FsRead, Capability::FsWrite]);
-            PolicyHost::with_denied(inner, CapabilitySet::ALL.difference(files))
+            PolicyHost::with_denied(inner, guarded.difference(files))
         }
         HostMode::Default | HostMode::Cells | HostMode::Excel => {
             let mut allowed = CapabilitySet::EMPTY;
@@ -273,10 +274,7 @@ fn observe(
             }
             engine.set_host_policy(policy);
             engine.set_host_callbacks(Some(callbacks));
-            PolicyHost::with_denied(
-                engine.host_services(),
-                CapabilitySet::ALL.difference(allowed),
-            )
+            PolicyHost::with_denied(engine.host_services(), guarded.difference(allowed))
         }
     };
     let _policy = host.enter_com_policy();

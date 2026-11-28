@@ -1,25 +1,22 @@
 //! Capability policy for the host layer.
 //!
-//! [`PolicyHost`] wraps any [`HostServices`] and gates the operations that reach the
-//! operating system (files, processes, environment, settings, `Declare`, COM activation,
-//! `SendKeys`/`AppActivate`) behind eight [`Capability`] values. Both execution backends
+//! [`PolicyHost`] wraps any [`HostServices`] and checks capabilities for file access, processes,
+//! environment, settings, `Declare`, COM activation, keyboard input and dialogs. Both backends
 //! reach those services only through the host they are given, so one wrapper covers VM3 and
 //! the JIT. In Safe mode a denied operation raises the nearest real VBA run-time error
 //! (70, 53 or 429) with its own `Err.Description`, and the [`HalError`] keeps the stable code
 //! `HAL-E-POLICY-DENIED` so a harness can tell a policy denial from the real error. Every
 //! request, allowed or denied, goes into a bounded audit log that the harness drains per case.
 //!
-//! This is a policy gate, not a sandbox. Design record:
-//! `docs/design/capability-policy-review-2026-11-11.md`.
+//! Policy design record: `docs/design/capability-policy-review-2026-11-11.md`.
 //!
-//! Gated and logged: `Open` (read or write by mode), `Kill`/`MkDir`/`RmDir`/`Name`/`FileCopy`/
+//! Checked and logged: `Open` (read or write by mode), `Kill`/`MkDir`/`RmDir`/`Name`/`FileCopy`/
 //! `SetAttr`/`ChDir`/`ChDrive`, `Dir`/`FileLen`/`GetAttr`/`FileDateTime`/`CurDir`, `Shell`,
 //! `Environ`/`Command`, the four settings functions, every `Declare` call, `SendKeys`/
-//! `AppActivate`, and COM activation (`CreateObject`, `GetObject`, `New` of an external class)
-//! through [`HostServices::authorize_com_activation`]. Handle operations (`Print #`, `Get`,
-//! `EOF`), `MsgBox`/`InputBox`, `Now`/`Timer`, `Debug.Print` and `DoEvents` pass through
-//! unlogged: after a denied open no handle exists. Native type-library loading and COM member
-//! dispatch are also gated while the owning host is compiling or executing.
+//! `AppActivate`, `MsgBox`/`InputBox`, and COM activation through
+//! [`HostServices::authorize_com_activation`]. Handle operations (`Print #`, `Get`, `EOF`),
+//! `Now`/`Timer`, `Debug.Print` and `DoEvents` pass through unlogged. The wrapper checks native
+//! type-library loading and COM member dispatch during compilation and execution.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -50,10 +47,14 @@ pub enum Capability {
     Ffi,
     ComActivate,
     UiKeys,
+    UiDialog,
+    UiFileDialog,
+    Clipboard,
+    Print,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 8] = [
+    pub const ALL: [Capability; 12] = [
         Capability::FsRead,
         Capability::FsWrite,
         Capability::Process,
@@ -62,6 +63,10 @@ impl Capability {
         Capability::Ffi,
         Capability::ComActivate,
         Capability::UiKeys,
+        Capability::UiDialog,
+        Capability::UiFileDialog,
+        Capability::Clipboard,
+        Capability::Print,
     ];
 
     /// The stable dotted name used in reports and CLI output.
@@ -75,6 +80,10 @@ impl Capability {
             Capability::Ffi => "ffi",
             Capability::ComActivate => "com.activate",
             Capability::UiKeys => "ui.keys",
+            Capability::UiDialog => "ui.dialog",
+            Capability::UiFileDialog => "ui.filedialog",
+            Capability::Clipboard => "clipboard",
+            Capability::Print => "print",
         }
     }
 
@@ -101,11 +110,15 @@ impl Capability {
             }
             Capability::Ffi => CapabilityId::DynamicLinking,
             Capability::ComActivate => CapabilityId::ComActivationDispatch,
-            Capability::UiKeys => CapabilityId::UiInteraction,
+            Capability::UiKeys
+            | Capability::UiDialog
+            | Capability::UiFileDialog
+            | Capability::Clipboard
+            | Capability::Print => CapabilityId::UiInteraction,
         }
     }
 
-    const fn bit(self) -> u8 {
+    const fn bit(self) -> u16 {
         1 << (self as u8)
     }
 }
@@ -118,11 +131,11 @@ impl std::fmt::Display for Capability {
 
 /// A set of capabilities.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CapabilitySet(u8);
+pub struct CapabilitySet(u16);
 
 impl CapabilitySet {
     pub const EMPTY: CapabilitySet = CapabilitySet(0);
-    pub const ALL: CapabilitySet = CapabilitySet(0xFF);
+    pub const ALL: CapabilitySet = CapabilitySet((1 << Capability::ALL.len()) - 1);
 
     pub fn of(caps: &[Capability]) -> Self {
         Self(caps.iter().fold(0, |acc, c| acc | c.bit()))
@@ -376,8 +389,8 @@ fn open_capability(mode: &Variant) -> Capability {
     }
 }
 
-/// The policy choice an application passes: Safe denies and audits every capability, Full
-/// passes everything through (still audited). "Not at all" is the embedder's choice not to run.
+/// Both policies audit each request. Safe admits the four interactive UI capabilities.
+/// Full admits every capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PolicyMode {
     #[default]
@@ -386,6 +399,19 @@ pub enum PolicyMode {
 }
 
 impl PolicyMode {
+    /// Capabilities this mode denies before any caller grants are applied.
+    pub fn denied_capabilities(self) -> CapabilitySet {
+        match self {
+            Self::Safe => CapabilitySet::ALL.difference(CapabilitySet::of(&[
+                Capability::UiDialog,
+                Capability::UiFileDialog,
+                Capability::Clipboard,
+                Capability::Print,
+            ])),
+            Self::Full => CapabilitySet::EMPTY,
+        }
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
             PolicyMode::Safe => "safe",
@@ -410,20 +436,17 @@ pub struct PolicyHost {
 
 impl PolicyHost {
     pub fn with_mode(inner: Arc<dyn HostServices>, mode: PolicyMode) -> Self {
-        match mode {
-            PolicyMode::Safe => Self::safe(inner),
-            PolicyMode::Full => Self::full(inner),
-        }
+        Self::with_denied(inner, mode.denied_capabilities())
     }
 
-    /// Safe mode: all eight capabilities denied (and logged).
+    /// Safe mode admits the UI capabilities and audits all policy requests.
     pub fn safe(inner: Arc<dyn HostServices>) -> Self {
-        Self::with_denied(inner, CapabilitySet::ALL)
+        Self::with_mode(inner, PolicyMode::Safe)
     }
 
-    /// Full mode: everything passes through, and is logged.
+    /// Full mode admits and audits every capability.
     pub fn full(inner: Arc<dyn HostServices>) -> Self {
-        Self::with_denied(inner, CapabilitySet::EMPTY)
+        Self::with_mode(inner, PolicyMode::Full)
     }
 
     pub fn with_denied(inner: Arc<dyn HostServices>, deny: CapabilitySet) -> Self {
@@ -848,10 +871,12 @@ impl ProcessEnvHal for PolicyHost {
 
 impl UiInteractionHal for PolicyHost {
     fn msg_box_variant(&self, prompt: Variant, style: Variant) -> HalResult<Variant> {
+        self.check(Capability::UiDialog, "msg_box", String::new())?;
         self.inner.ui().msg_box_variant(prompt, style)
     }
 
     fn input_box_variant(&self, prompt: Variant, default_value: Variant) -> HalResult<Variant> {
+        self.check(Capability::UiDialog, "input_box", String::new())?;
         self.inner.ui().input_box_variant(prompt, default_value)
     }
 
@@ -1644,8 +1669,37 @@ mod tests {
             } else {
                 assert!(ok, "{name} should pass through in Safe mode");
                 assert_eq!(inner.calls.borrow().as_slice(), [name]);
-                assert_eq!(host.audit().drain().total, 0, "{name} must not be logged");
+                let audit = host.audit().drain();
+                let expected = u64::from(matches!(name, "msg_box_variant" | "input_box_variant"));
+                assert_eq!(audit.total, expected, "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn safe_dialogs_pass_through_and_are_audited() {
+        let inner = recorder();
+        let host = PolicyHost::safe(inner.clone());
+        assert!(host.ui().msg_box_variant(v(), v()).is_ok());
+        assert!(host.ui().input_box_variant(v(), v()).is_ok());
+        assert_eq!(
+            inner.calls.borrow().as_slice(),
+            ["msg_box_variant", "input_box_variant"]
+        );
+        let audit = host.audit().drain();
+        assert_eq!(audit.total, 2);
+        assert_eq!(audit.denied, 0);
+        assert_eq!(
+            audit
+                .records
+                .iter()
+                .map(|row| row.capability.name())
+                .collect::<Vec<_>>(),
+            ["ui.dialog", "ui.dialog"]
+        );
+        for name in ["ui.dialog", "ui.filedialog", "clipboard", "print"] {
+            let capability = Capability::from_name(name).unwrap();
+            assert!(!host.denied_capabilities().contains(capability));
         }
     }
 

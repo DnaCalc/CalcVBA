@@ -542,7 +542,7 @@ fn triage_prediction_covers_every_observed_capability_on_both_backends() {
         );
         assert_eq!(
             observed,
-            calcvba_hal::CapabilitySet::ALL,
+            calcvba_hal::PolicyMode::Safe.denied_capabilities(),
             "{executor:?}: {observed:?}"
         );
         // Every call ran twice (plain and with Resume Next); every request was denied.

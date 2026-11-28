@@ -33,8 +33,9 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         Environ | Command => &[C::Env],
         GetSetting | GetAllSettings | SaveSetting | DeleteSetting => &[C::Settings],
         SendKeys | AppActivate => &[C::UiKeys],
+        MsgBox | InputBox => &[C::UiDialog],
         CreateObject | GetObject | AppObject => &[C::ComActivate],
-        // Not gated: pure functions, handle operations after an open, console, UI prompts,
+        // No policy request: pure functions, handle operations after an open, console,
         // time, diagnostics and the events of an already activated object.
         Len
         | LenB
@@ -194,8 +195,6 @@ pub const fn capabilities_of(id: NativeImplId) -> &'static [Capability] {
         | FileLock
         | FileUnlock
         | Partition
-        | MsgBox
-        | InputBox
         | Beep
         | DoEvents
         | ComSubscribeEvent
@@ -441,6 +440,7 @@ fn word_capability(word: &str) -> Option<Capability> {
         "environ" | "command" => C::Env,
         "getsetting" | "getallsettings" | "savesetting" | "deletesetting" => C::Settings,
         "sendkeys" | "appactivate" => C::UiKeys,
+        "msgbox" | "inputbox" => C::UiDialog,
         "createobject" | "getobject" => C::ComActivate,
         _ => return None,
     })

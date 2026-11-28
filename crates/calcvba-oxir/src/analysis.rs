@@ -92,7 +92,12 @@ fn mark_proc_arg(arg: &OxArg, facts: &mut EscapeFacts) {
 }
 
 fn mark_call_arg(arg: &OxCallArg, facts: &mut EscapeFacts) {
-    if let OxCallArg::ByRef(place) = arg {
+    if let OxCallArg::ByRef(place)
+    | OxCallArg::Named {
+        by_ref: Some(place),
+        ..
+    } = arg
+    {
         mark_place(place, facts);
     }
 }

@@ -6,6 +6,7 @@ use calcvba_symbol::portability::{EntryStatus, PortabilityEffect, ProcedureEffec
 pub(super) struct Block {
     pub successors: Vec<usize>,
     pub calls: Vec<usize>,
+    pub may_calls: Vec<usize>,
     pub may: BTreeSet<PortabilityEffect>,
     pub must: BTreeSet<PortabilityEffect>,
     pub unknown: bool,
@@ -60,11 +61,18 @@ fn summarize(procedure: &Procedure, reachable: &[usize], callees: &[Effects]) ->
         result.may.extend(block.may.iter().cloned());
         result.unknown |= block.unknown;
         local_must[index].extend(block.must.iter().cloned());
-        for &callee in &block.calls {
+        for (&callee, definite) in block
+            .calls
+            .iter()
+            .map(|call| (call, true))
+            .chain(block.may_calls.iter().map(|call| (call, false)))
+        {
             let effects = &callees[callee];
             result.may.extend(effects.may.iter().cloned());
             result.unknown |= effects.unknown;
-            local_must[index].extend(effects.must.iter().cloned());
+            if definite {
+                local_must[index].extend(effects.must.iter().cloned());
+            }
         }
     }
     if procedure.dynamic_control {
@@ -105,7 +113,11 @@ pub(super) fn solve(procedures: Vec<Procedure>) -> Vec<ProcedureEffects> {
     let mut caller_lists = vec![Vec::new(); procedures.len()];
     for (caller, procedure) in procedures.iter().enumerate() {
         for &block in &reachable[caller] {
-            for &callee in &procedure.blocks[block].calls {
+            for &callee in procedure.blocks[block]
+                .calls
+                .iter()
+                .chain(&procedure.blocks[block].may_calls)
+            {
                 caller_lists[callee].push(caller);
             }
         }

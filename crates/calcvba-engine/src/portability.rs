@@ -4,6 +4,7 @@
 //! and mode enforcement rules as the source analyzer in `calcvba_symbol::portability`.
 
 mod effects;
+mod values;
 
 use std::collections::HashMap;
 
@@ -18,6 +19,9 @@ use calcvba_symbol::portability::{
     com_activation_support, declare_support, enforce_report, looks_like_windows_path,
     lookup_matrix, verdict_for_support,
 };
+use values::{Value, Values};
+
+const DYNAMIC_ACTIVATION_ARGUMENTS: &str = "dynamic activation pathname or server";
 
 /// Inspect a compiled `.oxi` image against the portability matrix for `host`.
 pub fn check_image(image: &OxImage, host: Host) -> Report {
@@ -261,6 +265,14 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
                 blocks: Vec::with_capacity(func.blocks.len()),
                 dynamic_control: false,
             };
+            let gosub_returns: Vec<_> = func
+                .blocks
+                .iter()
+                .filter_map(|block| match &block.terminator {
+                    OxTerminator::GoSub { ret, .. } => Some(ret.0),
+                    _ => None,
+                })
+                .collect();
             for block in &func.blocks {
                 let mut footprint = effects::Block::default();
                 match &block.terminator {
@@ -278,9 +290,9 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
                         }
                         _ => footprint.successors.extend([then_blk.0, else_blk.0]),
                     },
-                    OxTerminator::GoSub { .. }
-                    | OxTerminator::GoSubReturn
-                    | OxTerminator::Resume
+                    OxTerminator::GoSub { target, .. } => footprint.successors.push(target.0),
+                    OxTerminator::GoSubReturn => footprint.successors.extend(&gosub_returns),
+                    OxTerminator::Resume
                     | OxTerminator::ResumeNext
                     | OxTerminator::ResumeLabel(_) => procedure.dynamic_control = true,
                     _ => {}
@@ -288,6 +300,17 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
                 footprint
                     .successors
                     .retain(|target| *target < func.blocks.len());
+                procedure.dynamic_control |= block
+                    .instrs
+                    .iter()
+                    .any(|inst| matches!(inst, OxInst::SetErrorHandler(_)));
+                procedure.blocks.push(footprint);
+            }
+            let flow = values::Flow::new(program, library, func);
+            let entries = flow.entries(&procedure);
+            for ((block, footprint), mut values) in
+                func.blocks.iter().zip(&mut procedure.blocks).zip(entries)
+            {
                 for inst in &block.instrs {
                     let start = report.findings.len();
                     check_inst(
@@ -297,11 +320,15 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
                         program,
                         library,
                         inst,
+                        &values,
                         host,
                         browser,
                     );
                     for finding in &report.findings[start..] {
-                        if finding.detail.as_deref() == Some("dynamic or omitted ProgID") {
+                        if matches!(
+                            finding.detail.as_deref(),
+                            Some("dynamic or omitted ProgID" | DYNAMIC_ACTIVATION_ARGUMENTS)
+                        ) {
                             footprint.unknown = true;
                         } else if finding.class != FeatureClass::Pure
                             && finding.feature != "Windows path"
@@ -318,7 +345,6 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
                         }
                     }
                     match inst {
-                        OxInst::SetErrorHandler(_) => procedure.dynamic_control = true,
                         OxInst::CallProc { proc, .. } if proc.0 < program.funcs.len() => {
                             footprint.calls.push(offsets[unit] + proc.0)
                         }
@@ -342,6 +368,10 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
                                 footprint.must.insert(effect.clone());
                             }
                         }
+                        OxInst::CallNative {
+                            callee: OxNativeCallee::Builtin(NativeImplId::EvaluateForeign),
+                            ..
+                        } => footprint.unknown = true,
                         OxInst::NewObject { class, .. } => {
                             if let Some(init) = program
                                 .classes
@@ -352,16 +382,41 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
                                 footprint.calls.push(offsets[unit] + init.0);
                             }
                         }
-                        OxInst::CallProcRef { .. }
-                        | OxInst::CallByName { .. }
+                        OxInst::CallProcRef { target, .. } => match values.get(target) {
+                            Some(Value::Procedure(proc)) if proc.0 < program.funcs.len() => {
+                                footprint.calls.push(offsets[unit] + proc.0);
+                            }
+                            _ => footprint.unknown = true,
+                        },
+                        OxInst::ComCallLate {
+                            name,
+                            recv,
+                            args,
+                            default_member: false,
+                            ..
+                        } if name.eq_ignore_ascii_case("Run")
+                            && values.get(recv) == Some(Value::Application) =>
+                        {
+                            record_run_target(footprint, program, offsets[unit], args, &values);
+                        }
+                        OxInst::ComCallEarly {
+                            method, recv, args, ..
+                        } if values.get(recv) == Some(Value::Application)
+                            && program
+                                .com_method(*method)
+                                .is_some_and(|m| m.name.eq_ignore_ascii_case("Run")) =>
+                        {
+                            record_run_target(footprint, program, offsets[unit], args, &values);
+                        }
+                        OxInst::CallByName { .. }
                         | OxInst::ComCallEarly { .. }
                         | OxInst::ComCallLate { .. }
                         | OxInst::NewExtern { .. }
                         | OxInst::PredeclaredExtern { .. } => footprint.unknown = true,
                         _ => {}
                     }
+                    flow.step(&mut values, inst);
                 }
-                procedure.blocks.push(footprint);
             }
             for finding in &mut report.findings[first_finding..] {
                 finding.procedure = Some(procedure.name.clone());
@@ -373,6 +428,40 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
     report.procedures = effects::solve(graph);
     report.effects_complete = true;
     report
+}
+
+fn record_run_target(
+    footprint: &mut effects::Block,
+    program: &OxProgram,
+    offset: usize,
+    args: &[OxCallArg],
+    values: &Values,
+) {
+    // Workbook selection and late-bound dispatch still happen at run time.
+    footprint.unknown = true;
+    let arguments = view_call_args(args, values);
+    let Some(target) = arguments.first().and_then(CallArgView::literal) else {
+        return;
+    };
+    let mut candidates = program.exports.iter().filter_map(|export| {
+        let (ExportToken::ModuleFunc { module, member, .. }, ExportTarget::Proc(index)) =
+            (&export.token, export.target)
+        else {
+            return None;
+        };
+        let matches = match target.split_once('.') {
+            Some((qualifier, procedure)) => {
+                qualifier.eq_ignore_ascii_case(module) && procedure.eq_ignore_ascii_case(member)
+            }
+            None => target.eq_ignore_ascii_case(member),
+        };
+        (matches && index < program.funcs.len()).then_some(index)
+    });
+    if let Some(index) = candidates.next()
+        && candidates.next().is_none()
+    {
+        footprint.may_calls.push(offset + index);
+    }
 }
 
 fn resolve_import(
@@ -490,48 +579,107 @@ fn check_operand_path(
     }
 }
 
-enum CallArgView<'a> {
-    ConstStr(&'a str),
+enum CallArgView {
+    Known(Value),
     Omitted,
     Dynamic,
 }
 
-fn view_call_args(args: &[OxCallArg]) -> Vec<CallArgView<'_>> {
+impl CallArgView {
+    fn literal(&self) -> Option<&str> {
+        match self {
+            Self::Known(value) => value.literal(),
+            _ => None,
+        }
+    }
+
+    fn path(&self) -> Option<String> {
+        match self {
+            Self::Known(value) => value.path(),
+            _ => None,
+        }
+    }
+}
+
+fn view_call_args(args: &[OxCallArg], values: &Values) -> Vec<CallArgView> {
     args.iter()
         .map(|arg| match arg {
-            OxCallArg::Operand(OxOperand::Const(OxConst::Str(text)))
-            | OxCallArg::ByValOverride(OxOperand::Const(OxConst::Str(text))) => {
-                CallArgView::ConstStr(text.as_str())
-            }
-            OxCallArg::Operand(OxOperand::Const(OxConst::NullStr))
-            | OxCallArg::ByValOverride(OxOperand::Const(OxConst::NullStr)) => {
-                CallArgView::ConstStr("")
-            }
+            OxCallArg::Operand(value)
+            | OxCallArg::ByValOverride(value)
+            | OxCallArg::Named { value, .. } => values
+                .get(value)
+                .map_or(CallArgView::Dynamic, CallArgView::Known),
+            OxCallArg::ByRef(place) => values
+                .at(*place)
+                .map_or(CallArgView::Dynamic, CallArgView::Known),
             OxCallArg::Omitted => CallArgView::Omitted,
-            OxCallArg::Named {
-                value: OxOperand::Const(OxConst::Str(text)),
-                ..
-            } => CallArgView::ConstStr(text.as_str()),
-            OxCallArg::Named {
-                value: OxOperand::Const(OxConst::NullStr),
-                ..
-            } => CallArgView::ConstStr(""),
             _ => CallArgView::Dynamic,
         })
         .collect()
 }
 
-fn view_proc_args(args: &[OxArg]) -> Vec<CallArgView<'_>> {
-    args.iter()
-        .map(|arg| match arg {
-            OxArg::ByVal(OxOperand::Const(OxConst::Str(text))) => {
-                CallArgView::ConstStr(text.as_str())
+enum BuiltinCall<'a> {
+    Native(NativeImplId, &'a [OxCallArg]),
+    Library(NativeImplId, &'a [OxArg]),
+}
+
+impl BuiltinCall<'_> {
+    fn id(&self) -> NativeImplId {
+        match self {
+            Self::Native(id, _) | Self::Library(id, _) => *id,
+        }
+    }
+
+    fn arguments(&self, values: &Values) -> Vec<CallArgView> {
+        match self {
+            Self::Native(_, args) => view_call_args(args, values),
+            Self::Library(_, args) => args
+                .iter()
+                .map(|arg| match arg {
+                    OxArg::Omitted => CallArgView::Omitted,
+                    OxArg::ByVal(value) => values
+                        .get(value)
+                        .map_or(CallArgView::Dynamic, CallArgView::Known),
+                    OxArg::ByRef(place) => values
+                        .at(*place)
+                        .map_or(CallArgView::Dynamic, CallArgView::Known),
+                })
+                .collect(),
+        }
+    }
+}
+
+fn builtin_call<'a>(
+    program: &OxProgram,
+    library: &calcvba_bundle::Bundle,
+    inst: &'a OxInst,
+) -> Option<BuiltinCall<'a>> {
+    match inst {
+        OxInst::CallNative {
+            callee: OxNativeCallee::Builtin(id),
+            args,
+            ..
+        } => Some(BuiltinCall::Native(*id, args)),
+        OxInst::CallExtern { import, args, .. } => {
+            let import = program.imports.get(import.0)?;
+            if !import.unit.eq_ignore_ascii_case("VBA") {
+                return None;
             }
-            OxArg::ByVal(OxOperand::Const(OxConst::NullStr)) => CallArgView::ConstStr(""),
-            OxArg::Omitted => CallArgView::Omitted,
-            _ => CallArgView::Dynamic,
-        })
-        .collect()
+            let export = library
+                .exports
+                .iter()
+                .find(|e| e.token.matches(&import.token))?;
+            let ExportTarget::Proc(proc) = export.target else {
+                return None;
+            };
+            let calcvba_bundle::NativeBody::Library(id) = library.procedures.get(proc)?.native?
+            else {
+                return None;
+            };
+            Some(BuiltinCall::Library(id, args))
+        }
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -540,33 +688,44 @@ fn check_builtin(
     project: &str,
     module: &str,
     id: NativeImplId,
-    args: &[CallArgView<'_>],
+    args: &[CallArgView],
     host: Host,
     browser: BrowserServices,
 ) {
     use NativeImplId::*;
+    let path = || args.first().and_then(CallArgView::path);
+    let path_pair = || {
+        let source = path();
+        let destination = args.get(1).and_then(CallArgView::path);
+        (source.is_some() || destination.is_some()).then(|| {
+            format!(
+                "{} -> {}",
+                source.as_deref().unwrap_or("?"),
+                destination.as_deref().unwrap_or("?")
+            )
+        })
+    };
     match id {
         CreateObject | GetObject => {
             let is_get = id == GetObject;
-            let prog_id = match args.get(usize::from(is_get)) {
-                Some(CallArgView::ConstStr(text)) => Some(*text),
-                _ => None,
+            let prog_id = args.get(usize::from(is_get)).and_then(CallArgView::literal);
+            let activation_arg = args.get(usize::from(!is_get));
+            let can_activate = match activation_arg {
+                None | Some(CallArgView::Omitted) => Some(!is_get),
+                Some(arg) => arg.literal().map(str::is_empty),
             };
-            let can_activate = if is_get {
-                matches!(args.first(), Some(CallArgView::ConstStr("")))
-            } else {
-                match args.get(1) {
-                    None | Some(CallArgView::Omitted) | Some(CallArgView::ConstStr("")) => true,
-                    Some(_) => false,
-                }
-            };
-            let support = com_activation_support(is_get, prog_id, can_activate, host);
+            let support =
+                com_activation_support(is_get, prog_id, can_activate.unwrap_or(false), host);
+            let conditional_activation = can_activate.is_none()
+                && support != com_activation_support(is_get, prog_id, true, host);
             let label = if is_get { "GetObject" } else { "CreateObject" };
-            let detail = Some(
+            let detail = Some(if conditional_activation {
+                DYNAMIC_ACTIVATION_ARGUMENTS.into()
+            } else {
                 prog_id
                     .map(str::to_owned)
-                    .unwrap_or_else(|| "dynamic or omitted ProgID".into()),
-            );
+                    .unwrap_or_else(|| "dynamic or omitted ProgID".into())
+            });
             record(
                 report,
                 project,
@@ -684,7 +843,7 @@ fn check_builtin(
             "FileSystem",
             "Dir",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -695,7 +854,7 @@ fn check_builtin(
             "FileSystem",
             "ChDir",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -728,7 +887,7 @@ fn check_builtin(
             "FileSystem",
             "FileCopy",
             None,
-            None,
+            path_pair(),
             host,
             browser,
         ),
@@ -739,7 +898,7 @@ fn check_builtin(
             "FileSystem",
             "FileDateTime",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -750,7 +909,7 @@ fn check_builtin(
             "FileSystem",
             "FileLen",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -761,7 +920,7 @@ fn check_builtin(
             "FileSystem",
             "GetAttr",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -772,7 +931,7 @@ fn check_builtin(
             "FileSystem",
             "SetAttr",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -783,7 +942,7 @@ fn check_builtin(
             "FileSystem",
             "Kill",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -794,7 +953,7 @@ fn check_builtin(
             "FileSystem",
             "MkDir",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -805,7 +964,7 @@ fn check_builtin(
             "FileSystem",
             "RmDir",
             None,
-            None,
+            path(),
             host,
             browser,
         ),
@@ -816,7 +975,7 @@ fn check_builtin(
             "Statements",
             "Open / Close / Get / Put",
             Some("Open"),
-            None,
+            path(),
             host,
             browser,
         ),
@@ -882,7 +1041,7 @@ fn check_builtin(
             "Statements",
             "Name ... As",
             Some("Name"),
-            None,
+            path_pair(),
             host,
             browser,
         ),
@@ -1096,9 +1255,21 @@ fn check_inst(
     program: &OxProgram,
     library: &calcvba_bundle::Bundle,
     inst: &OxInst,
+    values: &Values,
     host: Host,
     browser: BrowserServices,
 ) {
+    if let Some(call) = builtin_call(program, library, inst) {
+        check_builtin(
+            report,
+            project,
+            module,
+            call.id(),
+            &call.arguments(values),
+            host,
+            browser,
+        );
+    }
     match inst {
         OxInst::LoadProcRef { .. } => record_matrix(
             report,
@@ -1139,7 +1310,7 @@ fn check_inst(
             );
         }
         OxInst::Assign { value, .. } => check_operand_path(report, project, module, value, host),
-        OxInst::CallNative { callee, args, .. } => {
+        OxInst::CallNative { args, .. } => {
             for arg in args {
                 match arg {
                     OxCallArg::Operand(op)
@@ -1150,50 +1321,12 @@ fn check_inst(
                     _ => {}
                 }
             }
-            if let OxNativeCallee::Builtin(id) = callee {
-                check_builtin(
-                    report,
-                    project,
-                    module,
-                    *id,
-                    &view_call_args(args),
-                    host,
-                    browser,
-                );
-            }
         }
-        OxInst::CallExtern { import, args, .. } => {
+        OxInst::CallExtern { args, .. } => {
             for arg in args {
                 if let OxArg::ByVal(op) = arg {
                     check_operand_path(report, project, module, op, host);
                 }
-            }
-            let Some(imp) = program.imports.get(import.0) else {
-                return;
-            };
-            if !imp.unit.eq_ignore_ascii_case("VBA") {
-                return;
-            }
-            let id = library
-                .exports
-                .iter()
-                .find(|e| e.token.matches(&imp.token))
-                .and_then(|export| match export.target {
-                    calcvba_bundle::ExportTarget::Proc(p) => {
-                        library.procedures.get(p).and_then(|proc| proc.native)
-                    }
-                    _ => None,
-                });
-            if let Some(calcvba_bundle::NativeBody::Library(id)) = id {
-                check_builtin(
-                    report,
-                    project,
-                    module,
-                    id,
-                    &view_proc_args(args),
-                    host,
-                    browser,
-                );
             }
         }
         _ => {}
@@ -1204,6 +1337,120 @@ fn check_inst(
 mod tests {
     use super::*;
     use crate::{Engine, ExecBackend, HostConfig, RuntimeProfileId};
+
+    #[test]
+    fn excel_run_target_and_workbook_path_follow_bound_values() {
+        use calcvba_bundle::{BundleExport, ProcedureKind, ProjectMemberKind};
+        use calcvba_com::TypeLibMemberInvokeKind;
+        use calcvba_oxir::ids::{BlockId, TempId};
+        use calcvba_oxir::inst::OxBlock;
+        use calcvba_oxir::program::OxFunc;
+        use calcvba_oxir::ty::OxTy;
+        use calcvba_oxir::value::OxPlace;
+        use calcvba_symbol::portability::EntryStatus;
+
+        let temp = |id| OxPlace::Temp(TempId(id));
+        let text = |value: &str| OxOperand::Const(OxConst::Str(value.into()));
+        let native = |dst, id, value| OxInst::CallNative {
+            dst,
+            callee: OxNativeCallee::Builtin(id),
+            args: vec![OxCallArg::Operand(value)],
+        };
+        let member = |dst, recv, name: &str, arg| OxInst::ComCallLate {
+            dst,
+            recv: OxOperand::Use(recv),
+            name: name.into(),
+            default_member: false,
+            invoke_kind: if name == "Run" {
+                TypeLibMemberInvokeKind::Method
+            } else {
+                TypeLibMemberInvokeKind::PropertyGet
+            },
+            args: arg,
+        };
+        let func = |name: &str, instrs| OxFunc {
+            name: name.into(),
+            kind: ProcedureKind::Sub,
+            locals: Vec::new(),
+            temps: vec![OxTy::Variant; 6],
+            param_count: 0,
+            return_local: None,
+            blocks: vec![OxBlock {
+                id: BlockId(0),
+                instrs,
+                fault_target: None,
+                terminator: OxTerminator::Return,
+            }],
+            entry: BlockId(0),
+        };
+        let program = OxProgram {
+            unit_name: "Book".into(),
+            funcs: vec![
+                func(
+                    "Main",
+                    vec![
+                        native(Some(temp(0)), NativeImplId::AppObject, text("Excel.Global")),
+                        OxInst::Concat {
+                            dst: temp(1),
+                            lhs: text("Module1."),
+                            rhs: text("Mail"),
+                        },
+                        member(
+                            None,
+                            temp(0),
+                            "Run",
+                            vec![OxCallArg::Operand(OxOperand::Use(temp(1)))],
+                        ),
+                        member(Some(temp(2)), temp(0), "ThisWorkbook", vec![]),
+                        member(Some(temp(3)), temp(2), "Path", vec![]),
+                        OxInst::Concat {
+                            dst: temp(4),
+                            lhs: OxOperand::Use(temp(3)),
+                            rhs: text(r"\data.csv"),
+                        },
+                        native(
+                            Some(temp(5)),
+                            NativeImplId::FileLen,
+                            OxOperand::Use(temp(4)),
+                        ),
+                    ],
+                ),
+                func(
+                    "Mail",
+                    vec![native(
+                        Some(temp(0)),
+                        NativeImplId::CreateObject,
+                        text("Outlook.Application"),
+                    )],
+                ),
+            ],
+            exports: vec![BundleExport {
+                token: ExportToken::ModuleFunc {
+                    module: "Module1".into(),
+                    member: "Mail".into(),
+                    kind: ProjectMemberKind::Method,
+                },
+                target: ExportTarget::Proc(1),
+            }],
+            ..OxProgram::default()
+        };
+        let report = check_programs(&[&program], Host::Linux, BrowserServices::default());
+        let main = &report.procedures[0];
+        assert_eq!(main.status, EntryStatus::MayStop);
+        assert!(main.may.iter().any(|effect| {
+            effect.feature == "CreateObject"
+                && effect.detail.as_deref() == Some("Outlook.Application")
+        }));
+        assert!(main.must.iter().any(|effect| {
+            effect.feature == "FileLen" && effect.detail.as_deref() == Some(r"WorkbookDir\data.csv")
+        }));
+        assert!(
+            !main
+                .must
+                .iter()
+                .any(|effect| effect.verdict == Support::Reject)
+        );
+    }
 
     #[test]
     fn prepare_image_session_bytes_enforces_portability_mode_before_linking() {

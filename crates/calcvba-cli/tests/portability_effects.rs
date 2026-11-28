@@ -106,3 +106,101 @@ End Sub
         assert!(computed["must"].as_array().unwrap().is_empty());
     }
 }
+
+#[test]
+fn bound_effects_follow_local_strings_and_gosub() {
+    let root = std::env::temp_dir().join(format!(
+        "calcvba-portability-strings-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("Probe.bas");
+    fs::write(
+        &source,
+        r#"Option Explicit
+Public Sub SameClass(ByVal enabled As Boolean)
+    Dim className As String
+    Dim app As Object
+    If enabled Then
+        className = "Outlook." & "Application"
+    Else
+        className = "Outlook.Application"
+    End If
+    Set app = CreateObject(className)
+End Sub
+Public Sub DifferentClasses(ByVal enabled As Boolean)
+    Dim className As String
+    Dim app As Object
+    className = "Scripting.Dictionary"
+    If enabled Then className = "Outlook.Application"
+    Set app = CreateObject(className)
+End Sub
+Public Sub Overwritten()
+    Dim className As String
+    Dim app As Object
+    className = "Outlook.Application"
+    Mutate className
+    Set app = CreateObject(className)
+End Sub
+Private Sub Mutate(ByRef className As String)
+    className = "Scripting.Dictionary"
+End Sub
+Public Sub DynamicServer(ByVal serverName As String)
+    Dim target As Object
+    Set target = CreateObject("Scripting.FileSystemObject", serverName)
+End Sub
+Public Sub DynamicPath(ByVal fileName As String)
+    Dim target As Object
+    Set target = GetObject(fileName, "Scripting.FileSystemObject")
+End Sub
+Public Function TempSize() As Long
+    Dim path As String
+    path = Environ$("TEMP") & "\data.bin"
+    TempSize = FileLen(path)
+End Function
+Public Sub UnreachableWithGoSub()
+    GoSub LocalWork
+    Exit Sub
+Skipped:
+    Dim app As Object
+    Set app = CreateObject("Outlook.Application")
+    Exit Sub
+LocalWork:
+    Return
+End Sub
+"#,
+    )
+    .unwrap();
+    let report = inspect(&source);
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(report["effects_complete"], true, "{report}");
+    let procedures = report["procedures"].as_array().unwrap();
+    let find = |name| {
+        procedures
+            .iter()
+            .find(|row| row["procedure"] == name)
+            .unwrap()
+    };
+    let same = find("SameClass");
+    assert_eq!(same["status"], "cannot_run", "{same}");
+    assert_eq!(same["must"][0]["detail"], "Outlook.Application");
+    for name in [
+        "DifferentClasses",
+        "Overwritten",
+        "DynamicServer",
+        "DynamicPath",
+    ] {
+        let row = find(name);
+        assert_eq!(row["status"], "may_stop", "{row}");
+        assert_eq!(row["unknown"], true, "{row}");
+    }
+    let path = find("TempSize");
+    assert!(
+        path["may"].as_array().unwrap().iter().any(|effect| {
+            effect["feature"] == "FileLen" && effect["detail"] == r#"Env(TEMP)\data.bin"#
+        }),
+        "{path}"
+    );
+    let gosub = find("UnreachableWithGoSub");
+    assert_eq!(gosub["status"], "runs", "{gosub}");
+}

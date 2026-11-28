@@ -40,6 +40,8 @@ Finding verdicts use the shared vocabulary `native`, `model`, `host`, `shim`, `r
 
 Procedure statuses are `runs`, `may_stop` and `cannot_run`. `cannot_run` indicates a rejected must-effect. `may_stop` indicates a possible rejection or an unresolved call such as a computed ProgID. Bound effects follow static calls through the project closure and intersect branch effects on normal paths. Procedures with dynamic error control or computed branches can have a conservative may-set and an empty must-set. A source report can retain its findings when bound effects are unavailable.
 
+Bound procedure effects preserve string values across local assignments, concatenation and branches that agree. File effects can carry a literal path, `Env(NAME)`, `WorkbookDir` or `UserChosen` followed by a known suffix in `detail`. An Excel `Application.Run` target matching a unique local export contributes that procedure's may-effects. The workbook and call target are resolved by the host during execution.
+
 When the faithful loader cannot resolve a library, a procedure that declares, creates or accesses a value of an unresolved type refuses before its body runs. A library-qualified type identifies the missing library. An unresolved unqualified type lists the unavailable libraries as candidates because the type has no known owner. Resolved local types and procedures that leave the unavailable types unused can run in the same project.
 
 ## 1. References

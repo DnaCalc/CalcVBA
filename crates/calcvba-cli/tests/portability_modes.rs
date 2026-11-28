@@ -52,6 +52,51 @@ End Sub
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn faithful_mode_reports_an_absent_class_when_activation_is_reached() {
+    let path = std::env::temp_dir().join(format!(
+        "calcvba-portability-absent-class-{}.bas",
+        std::process::id()
+    ));
+    fs::write(
+        &path,
+        r#"Public Sub Main()
+    Probe False
+    Probe True
+End Sub
+Private Sub Probe(ByVal reach As Boolean)
+    Dim value As Object
+    On Error Resume Next
+    If reach Then Set value = CreateObject("CalcVBA.Portability.Absent")
+    Debug.Print Err.Number
+End Sub
+"#,
+    )
+    .unwrap();
+    let outputs = ["vm3", "jit"].map(|backend| {
+        Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+            .args([
+                "run",
+                "--backend",
+                backend,
+                "--profile",
+                "linux-stdio",
+                "--portability-mode",
+                "windows-faithful",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap()
+    });
+    fs::remove_file(&path).unwrap();
+    for (backend, output) in ["vm3", "jit"].into_iter().zip(outputs) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{backend}: {stderr}");
+        assert_eq!(stderr.split_whitespace().collect::<Vec<_>>(), ["0", "429"]);
+    }
+}
+
+#[test]
 fn strict_refuses_dormant_declarations_and_faithful_runs_on_both_backends() {
     let path = std::env::temp_dir().join(format!(
         "calcvba-portability-modes-{}.bas",

@@ -456,14 +456,17 @@ impl ComHal for StandardHostServices {
         })?;
         let prog_id_text = prog_id_value.as_str();
         let prog_id_name = prog_id_text.as_str();
-        if prog_id_name.is_empty() || prog_id_name.trim() != prog_id_name {
-            return Err(HalError::adapter_fault(
+        let absent = || {
+            HalError::adapter_fault(
                 self.profile,
                 capability,
                 "create_object",
                 "ActiveX component can't create object",
             )
-            .with_host_error_code(429));
+            .with_host_error_code(429)
+        };
+        if prog_id_name.is_empty() || prog_id_name.trim() != prog_id_name {
+            return Err(absent());
         }
         if let Some(projection) = &self.portable_objects
             && let Some(dispatch) = projection.create_object(prog_id_name)
@@ -478,6 +481,10 @@ impl ComHal for StandardHostServices {
         #[cfg(not(windows))]
         if let Some(value) = super::builtin_com::BuiltinObject::create(self, prog_id_name)? {
             return Ok(value);
+        }
+        #[cfg(not(windows))]
+        if self.policy.windows_faithful {
+            return Err(absent());
         }
         if !self.supports(capability) {
             return Err(self.unsupported(capability, "create_object"));
@@ -505,13 +512,7 @@ impl ComHal for StandardHostServices {
             }
         }
         if known_typelib_identity_for_prog_id_name(prog_id_name).is_none() {
-            return Err(HalError::adapter_fault(
-                self.profile,
-                capability,
-                "create_object",
-                "ActiveX component can't create object",
-            )
-            .with_host_error_code(429));
+            return Err(absent());
         }
         let object = allocate_projection_object_ref(self, prog_id_name, None)?;
         #[cfg(target_os = "windows")]

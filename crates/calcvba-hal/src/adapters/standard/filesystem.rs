@@ -521,6 +521,7 @@ pub(super) struct FileHandleState {
     pub(super) len: i32,
     pub(super) host_path: Option<PathBuf>,
     pub(super) data: Vec<u8>,
+    modified: bool,
     /// Output line width set by `Width #n` (`0` disables wrapping).
     pub(super) width: i32,
     /// Zero-based print column for sequential formatted output.
@@ -752,6 +753,32 @@ fn same_host_path(left: &Path, right: &Path) -> bool {
 }
 
 impl StandardHostServices {
+    fn flush_host_file(&self, entry: &FileHandleState) -> HalResult<()> {
+        let Some(path) = entry.host_path.as_ref().filter(|_| entry.mode != 0) else {
+            return Ok(());
+        };
+        let flush = || -> std::io::Result<()> {
+            fs::write(path, &entry.data)?;
+            #[cfg(not(windows))]
+            if entry.modified
+                && self.uses_windows_paths()
+                && let Some(bits) = read_mapped_attributes(path)?
+                && bits & VB_ARCHIVE == 0
+            {
+                write_mapped_attributes(path, bits | VB_ARCHIVE)?;
+            }
+            Ok(())
+        };
+        flush().map_err(|error| {
+            HalError::adapter_fault(
+                self.profile,
+                CapabilityId::FileSystemIo,
+                "close",
+                format!("failed to flush host path {}: {error}", path.display()),
+            )
+        })
+    }
+
     fn require_file_parent(&self, path: &Path, operation: &'static str) -> HalResult<()> {
         let Some(parent) = path
             .parent()
@@ -988,6 +1015,7 @@ impl FileSystemHal for StandardHostServices {
                     len: initial_len,
                     host_path,
                     data: initial_data,
+                    modified: mode == 1,
                     width: 0,
                     print_column,
                     locks: Vec::new(),
@@ -1119,6 +1147,7 @@ impl FileSystemHal for StandardHostServices {
                 len: initial_len,
                 host_path,
                 data: initial_data,
+                modified: mode == 1,
                 width: 0,
                 print_column,
                 locks: Vec::new(),
@@ -1196,34 +1225,12 @@ impl FileSystemHal for StandardHostServices {
             let count = drained.len() as i32;
             state.handles.clear();
             for entry in drained {
-                if entry.mode != 0
-                    && let Some(host_path) = entry.host_path.as_ref()
-                {
-                    fs::write(host_path, &entry.data).map_err(|err| {
-                        HalError::adapter_fault(
-                            self.profile,
-                            capability,
-                            "close",
-                            format!("failed to flush host path {}: {err}", host_path.display()),
-                        )
-                    })?;
-                }
+                self.flush_host_file(&entry)?;
             }
             self.assert_fs_invariants(&state, "close-all-post");
             Ok(Variant::from_i32(count))
         } else if let Some(entry) = state.handles.remove(&handle) {
-            if entry.mode != 0
-                && let Some(host_path) = entry.host_path.as_ref()
-            {
-                fs::write(host_path, &entry.data).map_err(|err| {
-                    HalError::adapter_fault(
-                        self.profile,
-                        capability,
-                        "close",
-                        format!("failed to flush host path {}: {err}", host_path.display()),
-                    )
-                })?;
-            }
+            self.flush_host_file(&entry)?;
             self.assert_fs_invariants(&state, "close-post");
             Ok(Variant::from_i32(1))
         } else {
@@ -1352,16 +1359,36 @@ impl FileSystemHal for StandardHostServices {
         if self.native_fs_enabled() {
             // VBA `RmDir` removes an empty directory; `remove_dir` (non-recursive)
             // matches (it errors if the directory is non-empty or missing).
-            fs::remove_dir(self.map_path(&path_text.as_str(), capability, "rmdir", true)?)
-                .map_err(|err| {
-                    HalError::adapter_fault(
-                        self.profile,
-                        capability,
-                        "rmdir",
-                        format!("failed to remove directory {path_text}: {err}"),
-                    )
-                    .with_host_error_code(directory_error_code(&err))
-                })?;
+            let directory = self.map_path(&path_text.as_str(), capability, "rmdir", true)?;
+            let fault = |reason: String, code| {
+                HalError::adapter_fault(
+                    self.profile,
+                    capability,
+                    "rmdir",
+                    format!("failed to remove directory {path_text}: {reason}"),
+                )
+                .with_host_error_code(code)
+            };
+            let mapped = self.uses_windows_paths();
+            if mapped {
+                let current = self
+                    .mapped_cur_dir(None)
+                    .and_then(|path| self.map_path(&path, capability, "rmdir", false));
+                if current.is_ok_and(|path| path == directory || same_host_path(&path, &directory))
+                    || fs::metadata(&directory)
+                        .is_ok_and(|meta| meta.is_dir() && meta.permissions().readonly())
+                {
+                    return Err(fault("directory is current or read-only".into(), 75));
+                }
+            }
+            fs::remove_dir(directory).map_err(|err| {
+                let code = if mapped && err.kind() == std::io::ErrorKind::NotADirectory {
+                    76
+                } else {
+                    directory_error_code(&err)
+                };
+                fault(err.to_string(), code)
+            })?;
         }
         Ok(Variant::from_i32(0))
     }
@@ -1618,6 +1645,7 @@ impl FileSystemHal for StandardHostServices {
             entry.data.resize(end, 0);
         }
         entry.data[pos..end].copy_from_slice(&bytes);
+        entry.modified = true;
         entry.position = if entry.mode == MODE_APPEND {
             entry.position.saturating_add(bytes.len() as i32)
         } else {
@@ -1654,6 +1682,7 @@ impl FileSystemHal for StandardHostServices {
             entry.data.resize(end, 0);
         }
         entry.data[pos..end].copy_from_slice(&bytes);
+        entry.modified |= !bytes.is_empty();
         entry.position = if entry.mode == MODE_APPEND {
             entry.position.saturating_add(bytes.len() as i32)
         } else {
@@ -1834,6 +1863,7 @@ impl FileSystemHal for StandardHostServices {
             entry.data.resize(write_end, 0);
         }
         entry.data[offset..write_end].copy_from_slice(&bytes);
+        entry.modified |= !bytes.is_empty();
         entry.position = slot_end as i32;
         entry.len = entry.len.max(write_end as i32);
         Ok(Variant::empty())
@@ -2280,7 +2310,11 @@ impl FileSystemHal for StandardHostServices {
             let p = self.variant_to_path(&path, capability, "filedatetime", "path", false)?;
             // A bare directory name is accepted, but its trailing separator is
             // not (Excel P_FileDateTime.14).
-            if p.as_os_str().to_string_lossy().ends_with(['\\', '/']) {
+            if path
+                .as_bstr()
+                .is_some_and(|text| text.as_str().ends_with(['\\', '/']))
+                || p.as_os_str().to_string_lossy().ends_with(['\\', '/'])
+            {
                 return Err(HalError::adapter_fault(
                     self.profile,
                     capability,

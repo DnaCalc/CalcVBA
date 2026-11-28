@@ -27,6 +27,10 @@ fn mapped_drive_uses_windows_case_and_remembers_project_directory() {
         .dir_variant(path("*.TXT"), Variant::from_i32(0))
         .unwrap();
     let missing = filesystem.ch_drive_variant(path("Q:")).unwrap_err();
+    let bad_drive = filesystem.ch_drive_variant(path("1")).unwrap_err();
+    let missing_path = filesystem
+        .file_len_variant(path(r"Q:\Notes.txt"))
+        .unwrap_err();
     filesystem
         .file_copy_variant(path("C:\\DATA\\notes.TXT"), path("copy.txt"))
         .unwrap();
@@ -38,9 +42,13 @@ fn mapped_drive_uses_windows_case_and_remembers_project_directory() {
         .unwrap_err();
     fs::remove_dir_all(root).unwrap();
     assert_eq!(size.as_i32(), Some(5));
-    assert_eq!(directory.as_bstr().unwrap().as_str(), "C:\\Data");
+    assert_eq!(directory.as_bstr().unwrap().as_str(), "C:\\dAta");
     assert_eq!(entry.as_bstr().unwrap().as_str(), "Notes.txt");
-    assert_eq!(missing.host_error_code, Some(76));
+    assert_eq!(
+        (missing.host_error_code, bad_drive.host_error_code),
+        (Some(68), Some(5))
+    );
+    assert_eq!(missing_path.host_error_code, Some(76));
     assert_eq!(copy, b"notes");
     assert_eq!(copy_attributes.as_i32(), Some(32));
     assert_eq!(collision.host_error_code, Some(75));
@@ -48,6 +56,33 @@ fn mapped_drive_uses_windows_case_and_remembers_project_directory() {
     assert!(
         diagnostic.contains("Data") && diagnostic.contains("data"),
         "{diagnostic}"
+    );
+}
+
+#[test]
+fn mapped_directory_suffixes_match_excel() {
+    let root = std::env::temp_dir().join(format!("calcvba-hal-path-suffix-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    let host = HostBuilder::new()
+        .profile(HalProfileId::Linux)
+        .policy(HostPolicy::native().with_windows_drive_root('C', &root))
+        .build();
+    let path = Variant::from_string;
+    let filesystem = host.fs();
+    let created = filesystem.mkdir_variant(path(r"C:\dot."));
+    let dot_exists = root.join("dot").is_dir();
+    let changed = filesystem.ch_dir_variant(path(r"C:\sub "));
+    let timestamp = filesystem.file_date_time_variant(path(r"C:\sub\"));
+    fs::remove_dir_all(root).unwrap();
+    created.unwrap();
+    assert_eq!(
+        (
+            dot_exists,
+            changed.is_ok(),
+            timestamp.err().and_then(|error| error.host_error_code)
+        ),
+        (true, true, Some(53))
     );
 }
 

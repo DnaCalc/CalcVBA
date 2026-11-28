@@ -21,7 +21,9 @@ listing = Dir$("*.TXT")
 On Error Resume Next
 ChDrive "Q:"
 missing = Err.Number
-Debug.Print size, folder, listing, missing
+Err.Clear
+ChDrive "1"
+Debug.Print size, folder, listing, missing, Err.Number
 End Sub
 "#,
     )
@@ -33,7 +35,57 @@ End Sub
         assert!(output.status.success(), "{stderr}");
         assert_eq!(
             stderr.split_whitespace().collect::<Vec<_>>(),
-            ["5", "C:\\Data", "Notes.txt", "76"]
+            ["5", "C:\\dAta", "Notes.txt", "68", "5"]
+        );
+    }
+}
+
+#[test]
+fn mapped_paths_match_directory_suffix_rules() {
+    let root = std::env::temp_dir().join(format!("calcvba-path-suffix-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let source = r#"
+Sub Main()
+    MkDir "C:\dot."
+    Debug.Print Dir$("C:\dot", vbDirectory)
+    MkDir "C:\sub"
+    ChDir "C:\sub "
+    Debug.Print Right$(CurDir$, 4)
+    On Error Resume Next
+    Dim stamp As Date, size As Long
+    stamp = FileDateTime(PathName:="C:\sub\")
+    Debug.Print Err.Number
+    Err.Clear
+    ChDir ""
+    Debug.Print Err.Number
+    Err.Clear
+    MkDir "C:\a<b"
+    Debug.Print Err.Number
+    Err.Clear
+    MkDir "C:\a?b"
+    Debug.Print Err.Number
+    Err.Clear
+    RmDir "C:\sub"
+    Debug.Print Err.Number
+    Err.Clear
+    size = FileLen("C:\*.bas")
+    Debug.Print Err.Number
+End Sub
+"#;
+    let runs = ["vm3", "jit"].map(|backend| {
+        let drive = root.join(backend);
+        fs::create_dir(&drive).unwrap();
+        let entry = drive.join("entry.bas");
+        fs::write(&entry, source).unwrap();
+        run_mapped_path_probe(&entry, backend)
+    });
+    fs::remove_dir_all(root).unwrap();
+    for output in runs {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(
+            stderr.split_whitespace().collect::<Vec<_>>(),
+            ["dot", "\\sub", "53", "76", "76", "76", "75", "52"]
         );
     }
 }
@@ -54,6 +106,10 @@ Sub Main()
     Debug.Print GetAttr("C:\Notes.txt")
     SetAttr "C:\Notes.txt", vbNormal
     Debug.Print GetAttr("C:\Notes.txt")
+    Open "C:\Notes.txt" For Append As #1
+    Print #1, "more"
+    Close #1
+    Debug.Print GetAttr("C:\Notes.txt")
     Kill "C:\Notes.txt"
 End Sub
 "#,
@@ -64,7 +120,10 @@ End Sub
     for output in runs {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{stderr}");
-        assert_eq!(stderr.split_whitespace().collect::<Vec<_>>(), ["3", "0"]);
+        assert_eq!(
+            stderr.split_whitespace().collect::<Vec<_>>(),
+            ["3", "0", "32"]
+        );
     }
 }
 

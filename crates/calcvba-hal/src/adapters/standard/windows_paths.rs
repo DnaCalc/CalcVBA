@@ -15,7 +15,7 @@ use super::StandardHostServices;
 #[derive(Debug)]
 pub(super) struct WindowsPaths {
     drive: char,
-    directories: BTreeMap<char, PathBuf>,
+    directories: BTreeMap<char, (char, PathBuf)>,
 }
 
 impl Default for WindowsPaths {
@@ -31,7 +31,7 @@ impl WindowsPaths {
     fn current_directory(&self, drive: char) -> &Path {
         self.directories
             .get(&drive)
-            .map(PathBuf::as_path)
+            .map(|(_, path)| path.as_path())
             .unwrap_or(Path::new(""))
     }
 
@@ -85,13 +85,20 @@ impl WindowsPaths {
                 ".." => {
                     segments.pop();
                 }
-                part if part.contains([':', '\0']) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "invalid Windows path",
-                    ));
+                part => {
+                    let name = if part.contains(['*', '?']) {
+                        part
+                    } else {
+                        part.trim_end_matches([' ', '.'])
+                    };
+                    if name.is_empty() || name.contains(['<', '>', ':', '"', '|', '\0']) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "invalid Windows path",
+                        ));
+                    }
+                    segments.push(name.into());
                 }
-                part => segments.push(part.into()),
             }
         }
 
@@ -128,7 +135,7 @@ impl WindowsPaths {
             )
         };
         let mut absolute = root.clone();
-        let mut relative: PathBuf = prefix.iter().collect();
+        let relative = prefix.iter().chain(&segments[prefix.len()..]).collect();
         let last_segment = segments.len().saturating_sub(1);
         for (index, name) in segments.into_iter().enumerate().skip(prefix.len()) {
             if name.contains(['*', '?']) {
@@ -139,12 +146,10 @@ impl WindowsPaths {
                     ));
                 }
                 absolute.push(&name);
-                relative.push(name);
                 continue;
             }
             let name = matching_entry(&absolute, &name)?;
             absolute.push(&name);
-            relative.push(name);
             // WASI resolves files through its preopened capabilities. Rust's
             // canonicalize is unavailable there.
             if cfg!(target_os = "wasi") {
@@ -241,6 +246,9 @@ impl StandardHostServices {
         if !self.uses_windows_paths() || text.is_empty() {
             return Ok(PathBuf::from(text));
         }
+        if !matches!(operation, "dir" | "kill") && text.contains(['*', '?']) {
+            return Err(self.invalid_windows_path(capability, operation));
+        }
         self.windows_paths
             .borrow()
             .resolve(&self.policy, text, write)
@@ -252,14 +260,20 @@ impl StandardHostServices {
         let state = self.windows_paths.borrow();
         let drive = letter.map_or(state.drive, |c| c.to_ascii_uppercase());
         self.require_mapped_drive(drive, "curdir")?;
-        let suffix = state
-            .current_directory(drive)
-            .to_string_lossy()
-            .replace('/', "\\");
-        Ok(format!("{drive}:\\{suffix}"))
+        let (spelling, directory) = state
+            .directories
+            .get(&drive)
+            .map_or((drive, Path::new("")), |(letter, path)| {
+                (*letter, path.as_path())
+            });
+        let suffix = directory.to_string_lossy().replace('/', "\\");
+        Ok(format!("{spelling}:\\{suffix}"))
     }
 
     pub(super) fn mapped_ch_dir(&self, text: &str) -> HalResult<()> {
+        if text.is_empty() || text.contains(['*', '?']) {
+            return Err(self.invalid_windows_path(CapabilityId::FileSystemIo, "chdir"));
+        }
         let mut state = self.windows_paths.borrow_mut();
         let (drive, path, relative) = state
             .resolve(&self.policy, text, false)
@@ -284,11 +298,27 @@ impl StandardHostServices {
                 ),
             )
         })?;
-        state.directories.insert(drive, relative);
+        let spelling = match text.as_bytes() {
+            [letter, b':', _, ..] if letter.is_ascii_alphabetic() => *letter as char,
+            _ => state
+                .directories
+                .get(&drive)
+                .map_or(drive, |(letter, _)| *letter),
+        };
+        state.directories.insert(drive, (spelling, relative));
         Ok(())
     }
 
     pub(super) fn mapped_ch_drive(&self, letter: char) -> HalResult<()> {
+        if !letter.is_ascii_alphabetic() {
+            return Err(HalError::adapter_fault(
+                self.profile,
+                CapabilityId::FileSystemIo,
+                "chdrive",
+                "invalid drive letter",
+            )
+            .with_host_error_code(5));
+        }
         let drive = letter.to_ascii_uppercase();
         self.require_mapped_drive(drive, "chdrive")?;
         self.windows_paths.borrow_mut().drive = drive;
@@ -413,14 +443,24 @@ impl StandardHostServices {
         operation: &'static str,
         error: io::Error,
     ) -> HalError {
-        let code = match error.kind() {
-            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory => 76,
-            io::ErrorKind::InvalidInput => 52,
-            io::ErrorKind::PermissionDenied => 70,
+        let code = match (operation, error.kind()) {
+            ("chdrive", io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => 68,
+            (_, io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => 76,
+            ("chdir" | "mkdir" | "rmdir", io::ErrorKind::InvalidInput) => 76,
+            (_, io::ErrorKind::InvalidInput) => 52,
+            (_, io::ErrorKind::PermissionDenied) => 70,
             _ => 75,
         };
         HalError::adapter_fault(self.profile, capability, operation, error.to_string())
             .with_host_error_code(code)
+    }
+
+    fn invalid_windows_path(&self, capability: CapabilityId, operation: &'static str) -> HalError {
+        self.windows_path_error(
+            capability,
+            operation,
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid Windows path"),
+        )
     }
 }
 

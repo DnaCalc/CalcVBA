@@ -115,7 +115,7 @@ impl Mode {
         host: Host,
         browser: BrowserServices,
     ) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
-        if self == Self::Native {
+        if self != Self::Strict {
             return Ok(Vec::new());
         }
 
@@ -136,7 +136,7 @@ pub fn enforce_report(
     report: Report,
 ) -> Result<Vec<calcvba_diagnostics::Diagnostic>, Box<calcvba_diagnostics::Diagnostic>> {
     use calcvba_diagnostics::{Diagnostic, DiagnosticPhase, DiagnosticSeverity, DiagnosticSource};
-    if mode == Mode::Native {
+    if mode != Mode::Strict {
         return Ok(Vec::new());
     }
     let host = report.host;
@@ -147,21 +147,16 @@ pub fn enforce_report(
         source.line = finding.line.and_then(|line| u32::try_from(line).ok());
         source.column = finding.line.map(|_| 1);
 
-        let is_shell = finding.feature == "Shell";
         let feature = match finding.detail {
             Some(detail) => format!("{} ({detail})", finding.feature),
             None => finding.feature,
         };
         let reason = if finding.verdict == Support::Reject {
             Some("the host has no supported implementation")
-        } else if mode == Mode::Strict && finding.class == FeatureClass::Windows {
+        } else if finding.class == FeatureClass::Windows {
             Some("strict mode refuses Windows-specific constructs")
-        } else if mode == Mode::Strict
-            && matches!(finding.verdict, Support::Shim | Support::Replace)
-        {
+        } else if matches!(finding.verdict, Support::Shim | Support::Replace) {
             Some("strict mode requires native or modelled behaviour")
-        } else if mode == Mode::WindowsFaithful && is_shell && host != Host::Windows {
-            Some("the host has no Windows command mapping")
         } else {
             None
         };
@@ -175,7 +170,7 @@ pub fn enforce_report(
                 .with_source(source),
             ));
         }
-        if mode == Mode::Strict && finding.verdict == Support::Host {
+        if finding.verdict == Support::Host {
             let mut warning = Diagnostic::error(
                 "PORT-W-HOST-DEPENDENT",
                 DiagnosticPhase::ProjectLoad,

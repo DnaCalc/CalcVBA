@@ -43,7 +43,7 @@ pub fn enforce_image(
     host: Host,
     browser: BrowserServices,
 ) -> Result<Vec<Diagnostic>, Box<Diagnostic>> {
-    if mode == Mode::Native {
+    if mode != Mode::Strict {
         return Ok(Vec::new());
     }
     enforce_report(
@@ -1015,7 +1015,7 @@ mod tests {
             backend: ExecBackend::Vm3,
         });
         engine.set_runtime_profile(RuntimeProfileId::LinuxStdio);
-        engine.set_portability_mode(Mode::WindowsFaithful);
+        engine.set_portability_mode(Mode::Strict);
         let err = match engine.prepare_image_session_bytes(&bytes) {
             Ok(_) => panic!("expected prepare_image_session_bytes rejection"),
             Err(err) => err,

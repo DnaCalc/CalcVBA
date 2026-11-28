@@ -420,6 +420,23 @@ impl ProcessEnvHal for StandardHostServices {
         if !self.policy.allow_process_spawn {
             return Err(self.denied(capability, "shell"));
         }
+        #[cfg(not(windows))]
+        if self.policy.windows_faithful {
+            let mapping = command
+                .as_bstr()
+                .and_then(|text| self.policy.windows_shell_commands.get(&text.as_str()));
+            let Some(mapping) = mapping.filter(|_| self.native_process_enabled()) else {
+                return Err(shell_launch_error(
+                    self.profile,
+                    std::io::ErrorKind::NotFound.into(),
+                ));
+            };
+            let child = std::process::Command::new(&mapping.program)
+                .args(&mapping.arguments)
+                .spawn()
+                .map_err(|error| shell_launch_error(self.profile, error))?;
+            return Ok(Variant::from_f64(f64::from(child.id())));
+        }
         if self.native_process_enabled()
             && let Some(text) = command.as_bstr()
             && !text.as_str().trim().is_empty()

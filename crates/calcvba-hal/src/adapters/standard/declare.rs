@@ -212,6 +212,16 @@ pub(super) fn plan(
         state.declare_plans.insert(key, Rc::clone(&plan));
         return Ok(plan);
     }
+    if host.policy.windows_faithful && !cfg!(windows) {
+        return Err(vba_fault(
+            host,
+            53,
+            format!(
+                "No portable implementation for {}!{}",
+                descriptor.library, descriptor.alias
+            ),
+        ));
+    }
     let library_key = descriptor.library.to_ascii_lowercase();
     let library = match state.native_modules.get(&library_key) {
         Some(library) => Arc::clone(library),

@@ -1,7 +1,58 @@
 use std::{fs, process::Command};
 
 #[test]
-fn strict_and_faithful_refuse_at_load_on_both_backends() {
+#[cfg(target_os = "linux")]
+fn faithful_mode_runs_unrelated_procedures_and_delivers_conditional_faults() {
+    let path = std::env::temp_dir().join(format!(
+        "calcvba-portability-optional-{}.bas",
+        std::process::id()
+    ));
+    fs::write(
+        &path,
+        r#"Private Declare PtrSafe Sub Absent Lib "calcvba_missing_library_for_probe.dll" ()
+Public Sub Main()
+    Probe False
+    Probe True
+End Sub
+Private Sub Probe(ByVal reach As Boolean)
+    On Error Resume Next
+    If reach Then Absent
+    Debug.Print Err.Number
+    Err.Clear
+    If reach Then Shell "true"
+    Debug.Print Err.Number
+End Sub
+"#,
+    )
+    .unwrap();
+    let runs = ["vm3", "jit"].map(|backend| {
+        Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
+            .args([
+                "run",
+                "--backend",
+                backend,
+                "--profile",
+                "linux-stdio",
+                "--portability-mode",
+                "windows-faithful",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap()
+    });
+    fs::remove_file(path).unwrap();
+    for (backend, output) in ["vm3", "jit"].into_iter().zip(runs) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{backend}: {stderr}");
+        assert_eq!(
+            stderr.split_whitespace().collect::<Vec<_>>(),
+            ["0", "0", "53", "53"]
+        );
+    }
+}
+
+#[test]
+fn strict_refuses_dormant_declarations_and_faithful_runs_on_both_backends() {
     let path = std::env::temp_dir().join(format!(
         "calcvba-portability-modes-{}.bas",
         std::process::id()
@@ -37,20 +88,15 @@ fn strict_and_faithful_refuse_at_load_on_both_backends() {
         })
     });
     fs::remove_file(path).unwrap();
-    for (index, output) in results.into_iter().flatten().enumerate() {
-        assert!(!output.status.success());
-        assert!(!String::from_utf8_lossy(&output.stdout).contains("entered Main"));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    for [strict, faithful] in results {
+        assert!(!strict.status.success());
+        let stderr = String::from_utf8_lossy(&strict.stderr);
         assert!(!stderr.contains("entered Main"));
         for expected in [
             "PORT-E-UNSUPPORTED",
             "Declare",
             "kernel32",
-            if index % 2 == 0 {
-                "\"line\": 1"
-            } else {
-                "\"line\": 2"
-            },
+            "\"line\": 1",
             "linux",
         ] {
             assert!(
@@ -58,6 +104,11 @@ fn strict_and_faithful_refuse_at_load_on_both_backends() {
                 "{expected:?} missing from {stderr}"
             );
         }
+        assert!(faithful.status.success(), "{faithful:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&faithful.stderr).trim(),
+            "entered Main"
+        );
     }
 }
 
@@ -158,7 +209,7 @@ fn faithful_mode_refuses_known_entry_with_wrong_signature() {
     ));
     fs::write(
         &path,
-        "Private Declare PtrSafe Function Sleep Lib \"kernel32\" (ByVal ms As Double) As Long\nSub Main()\nEnd Sub\n",
+        "Private Declare PtrSafe Function Sleep Lib \"kernel32\" (ByVal ms As Double) As Long\nSub Main()\nOn Error Resume Next\nDebug.Print Sleep(0)\nDebug.Print Err.Number\nEnd Sub\n",
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
@@ -173,12 +224,9 @@ fn faithful_mode_refuses_known_entry_with_wrong_signature() {
         .output()
         .unwrap();
     fs::remove_file(path).unwrap();
-    assert!(!output.status.success(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("PORT-E-UNSUPPORTED") && stderr.contains("kernel32!Sleep"),
-        "{stderr}"
-    );
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(stderr.trim(), "53");
 }
 
 #[test]
@@ -407,7 +455,7 @@ fn run_image_enforces_portability_modes_without_source_on_both_backends() {
         "{report}"
     );
 
-    // Load-time rejection on both VM3 and JIT in windows-faithful and strict modes.
+    // Strict rejects the image at load; faithful can run its independent entry.
     for backend in ["vm3", "jit"] {
         for mode in ["windows-faithful", "strict"] {
             let output = Command::new(env!("CARGO_BIN_EXE_calcvba-cli"))
@@ -426,20 +474,22 @@ fn run_image_enforces_portability_modes_without_source_on_both_backends() {
                 .output()
                 .unwrap();
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                !output.status.success(),
-                "{backend}/{mode} should reject: {stderr}"
-            );
-            assert!(
-                !stderr.contains("entered Main"),
-                "{backend}/{mode}: {stderr}"
-            );
-            assert!(
-                stderr.contains("PORT-E-UNSUPPORTED")
-                    && stderr.contains("Declare")
-                    && stderr.contains("kernel32"),
-                "{backend}/{mode}: {stderr}"
-            );
+            if mode == "strict" {
+                assert!(!output.status.success(), "{backend}/{mode}: {stderr}");
+                assert!(
+                    !stderr.contains("entered Main"),
+                    "{backend}/{mode}: {stderr}"
+                );
+                assert!(
+                    stderr.contains("PORT-E-UNSUPPORTED")
+                        && stderr.contains("Declare")
+                        && stderr.contains("kernel32"),
+                    "{backend}/{mode}: {stderr}"
+                );
+            } else {
+                assert!(output.status.success(), "{backend}/{mode}: {stderr}");
+                assert_eq!(stderr.trim(), "entered Main");
+            }
         }
     }
 

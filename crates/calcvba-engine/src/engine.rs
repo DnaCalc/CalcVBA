@@ -1040,6 +1040,9 @@ impl Engine {
 
     pub fn set_portability_mode(&mut self, mode: calcvba_symbol::portability::Mode) {
         self.portability_mode = Some(mode);
+        let mut policy = self.host_policy().clone();
+        policy.windows_faithful = mode == calcvba_symbol::portability::Mode::WindowsFaithful;
+        self.set_host_policy(policy);
     }
 
     fn portability_host(&self) -> calcvba_symbol::portability::Host {
@@ -1076,7 +1079,7 @@ impl Engine {
         let mode = self
             .portability_mode
             .unwrap_or_else(|| Mode::for_project(entry));
-        if mode == Mode::Native {
+        if mode != Mode::Strict {
             return Ok(());
         }
         let host = self.portability_host();
@@ -1099,7 +1102,7 @@ impl Engine {
         let Some(mode) = self.portability_mode else {
             return Ok(());
         };
-        if mode == Mode::Native {
+        if mode != Mode::Strict {
             return Ok(());
         }
         let warnings = crate::portability::enforce_image(

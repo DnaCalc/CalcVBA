@@ -104,19 +104,19 @@ fn provider_enforces_portability_mode_across_load_graph_and_reload() {
          End Function\n",
     );
     for backend in [api::Backend::Interpreter, api::Backend::Jit] {
-        let err = match provider.load(&unsupported, backend, api::HOST_API_ABI) {
-            Ok(_) => panic!("expected load rejection for {backend:?}"),
-            Err(err) => err,
-        };
-        let message = err.to_string();
-        assert!(
-            message.contains("PORT-E-UNSUPPORTED") && message.contains("kernel32!Absent"),
-            "{backend:?}: {message}"
+        let session = provider
+            .load(&unsupported, backend, api::HOST_API_ABI)
+            .unwrap();
+        let handle = session
+            .bind("Main", "Answer", api::ProcedureKind::Function)
+            .unwrap();
+        assert_eq!(
+            session.call_bound(&handle, &[], 10_000).unwrap(),
+            api::Variant::from_i32(42)
         );
     }
 
-    // Valid project with a host-supplied ObjectLibrary loads and executes in windows-faithful mode,
-    // and reloading with a rejected construct fails at reload time while keeping the old session live.
+    // Faithful reload publishes the newly compiled code and expires old handles.
     let mut valid = api::Project::module(
         "Main",
         "Public Function Answer() As Long\nAnswer = 7\nEnd Function\n",
@@ -146,18 +146,20 @@ fn provider_enforces_portability_mode_across_load_graph_and_reload() {
         session.call_bound(&handle, &[], 10_000).unwrap(),
         api::Variant::from_i32(7)
     );
-    let reload_err = session.reload(&unsupported).unwrap_err().to_string();
-    assert!(
-        reload_err.contains("PORT-E-UNSUPPORTED") && reload_err.contains("kernel32!Absent"),
-        "{reload_err}"
-    );
-    // Original session remains intact after rejected reload.
+    session.reload(&unsupported).unwrap();
+    assert!(matches!(
+        session.call_bound(&handle, &[], 10_000),
+        Err(api::Error::StaleHandle)
+    ));
+    let handle = session
+        .bind("Main", "Answer", api::ProcedureKind::Function)
+        .unwrap();
     assert_eq!(
         session.call_bound(&handle, &[], 10_000).unwrap(),
-        api::Variant::from_i32(7)
+        api::Variant::from_i32(42)
     );
 
-    // Project graph load & reload_graph also enforce portability across referenced libraries.
+    // Faithful mode can load a graph with a dormant unsupported procedure.
     let bad_helper = api::ProjectNode {
         project: api::Project {
             name: "Helper".into(),
@@ -198,19 +200,14 @@ fn provider_enforces_portability_mode_across_load_graph_and_reload() {
         root: "Entry".into(),
         projects: vec![bad_helper, entry.clone()],
     };
-    let graph_err = match provider.load_graph(
-        &bad_graph,
-        &[],
-        api::Backend::Interpreter,
-        api::HOST_API_ABI,
-    ) {
-        Ok(_) => panic!("expected bad graph rejection"),
-        Err(err) => err.to_string(),
-    };
-    assert!(
-        graph_err.contains("PORT-E-UNSUPPORTED") && graph_err.contains("SendKeys"),
-        "{graph_err}"
-    );
+    provider
+        .load_graph(
+            &bad_graph,
+            &[],
+            api::Backend::Interpreter,
+            api::HOST_API_ABI,
+        )
+        .unwrap();
 
     // Strict mode allows shadowed Dir() across a project graph, then refuses bad_graph on reload_graph.
     let strict_provider = Provider::default().with_portability_mode(Mode::Strict);
@@ -238,14 +235,14 @@ fn provider_enforces_portability_mode_across_load_graph_and_reload() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn module_load_with_portability_rejects_unsupported_source() {
+fn module_load_with_strict_portability_rejects_unsupported_source() {
     use calcvba_host::Module;
     use calcvba_host::portability::Mode;
 
     let err = match Module::load_with_portability(
         "Main",
         "Sub Main()\nSendKeys \"a\"\nEnd Sub\n",
-        Mode::WindowsFaithful,
+        Mode::Strict,
     ) {
         Ok(_) => panic!("expected rejection"),
         Err(err) => err.to_string(),

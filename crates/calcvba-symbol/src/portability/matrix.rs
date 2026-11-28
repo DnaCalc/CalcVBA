@@ -131,7 +131,7 @@ pub(super) const MATRIX: &[Feature] = &[
     Feature { area: "Interaction", name: "Partition", class: FeatureClass::Pure, support: [Native, Native, Native, Native, Native], mac_dialect: "same (to measure)" },
     Feature { area: "Interaction", name: "SaveSetting", class: FeatureClass::Shim, support: [Native, Shim, Shim, Shim, Shim], mac_dialect: "stored in a preferences plist, not a registry (to measure)" },
     Feature { area: "Interaction", name: "SendKeys", class: FeatureClass::Windows, support: [Native, Reject, Reject, Reject, Reject], mac_dialect: "not supported on Mac (to measure)" },
-    Feature { area: "Interaction", name: "Shell", class: FeatureClass::Windows, support: [Native, Shim, Shim, Reject, Reject], mac_dialect: "runs a POSIX command (to measure)" },
+    Feature { area: "Interaction", name: "Shell", class: FeatureClass::Windows, support: [Native, Reject, Reject, Reject, Reject], mac_dialect: "runs a POSIX command (to measure)" },
     Feature { area: "Interaction", name: "Switch", class: FeatureClass::Pure, support: [Native, Native, Native, Native, Native], mac_dialect: "same (to measure)" },
     Feature { area: "Match", name: "FirstIndex", class: FeatureClass::Pure, support: [Native, Native, Native, Native, Native], mac_dialect: "same; RegExp in VBA 7.1 for Mac (to measure)" },
     Feature { area: "Match", name: "Length", class: FeatureClass::Pure, support: [Native, Native, Native, Native, Native], mac_dialect: "same; RegExp in VBA 7.1 for Mac (to measure)" },

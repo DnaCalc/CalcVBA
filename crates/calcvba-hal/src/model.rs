@@ -145,6 +145,10 @@ pub struct HostPolicy {
     pub allow_interaction: bool,
     pub allow_process_spawn: bool,
     pub allow_filesystem_mutation: bool,
+    /// Use the Windows VBA facilities on non-Windows hosts where they are available.
+    pub windows_faithful: bool,
+    /// Exact VBA Shell command lines mapped to an executable and fixed argument list.
+    pub windows_shell_commands: std::collections::BTreeMap<String, ShellCommand>,
     /// Host roots for Windows-dialect drive letters. Empty uses host paths.
     pub windows_drive_roots: std::collections::BTreeMap<char, std::path::PathBuf>,
     /// Host roots for named UNC server/share pairs.
@@ -160,6 +164,12 @@ pub struct HostPolicy {
     pub wasm_runtime_class: WasmRuntimeClass,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellCommand {
+    pub program: std::path::PathBuf,
+    pub arguments: Vec<std::ffi::OsString>,
+}
+
 impl HostPolicy {
     /// Enable the native host services for ordinary Office-style execution.
     pub fn native() -> Self {
@@ -168,6 +178,8 @@ impl HostPolicy {
             allow_interaction: true,
             allow_process_spawn: true,
             allow_filesystem_mutation: true,
+            windows_faithful: false,
+            windows_shell_commands: Default::default(),
             windows_drive_roots: Default::default(),
             windows_unc_roots: Default::default(),
             codepage: None,
@@ -235,6 +247,8 @@ impl Default for HostPolicy {
             allow_interaction: false,
             allow_process_spawn: true,
             allow_filesystem_mutation: false,
+            windows_faithful: false,
+            windows_shell_commands: Default::default(),
             windows_drive_roots: Default::default(),
             windows_unc_roots: Default::default(),
             codepage: None,

@@ -52,7 +52,7 @@ For each host, the matrix says what CalcVBA must do there to give the dialect's 
 | **shim** | Emulation: path map, settings store, attribute store, synthetic environment |
 | **host** | A machine value or the UI host's answer |
 | **replace** | Only through a portable replacement: a portable COM class, an emulated Declare entry point |
-| **reject** | Cannot work there; refused at load with the reason |
+| **reject** | The facility is unavailable on the selected host |
 
 Counts for Windows-dialect code (rows: 214):
 
@@ -60,10 +60,10 @@ Counts for Windows-dialect code (rows: 214):
 |---|---:|---:|---:|---:|---:|
 | native | 158 | 129 | 129 | 128 | 128 |
 | model | 42 | 42 | 42 | 42 | 42 |
-| shim | 0 | 21 | 20 | 20 | 20 |
+| shim | 0 | 20 | 19 | 20 | 20 |
 | host | 13 | 13 | 13 | 10 | 13 |
 | replace | 0 | 5 | 6 | 5 | 5 |
-| reject | 1 | 4 | 4 | 9 | 6 |
+| reject | 1 | 5 | 5 | 9 | 6 |
 
 "Model" appears on Windows too, deliberately. Locale, code page and transcendental maths come from CalcVBA's own implementation on every host, so results don't depend on the OS's maths library or regional APIs. Today Sin's last bit already differs between Linux and Windows (dc-q6brh.112), and date text ignores regional settings on every host (dc-q6brh.6).
 
@@ -148,11 +148,13 @@ Three settings decide how a project runs:
    - where settings live (registry or plist);
    - which reference CalcVBA is checked against.
 3. **Portability strictness** (new):
-   - **faithful:** shims and replacements on. A construct that can't work on this host and has no replacement is rejected at load.
+   - **faithful:** shims and replacements on. The load-time report lists unavailable facilities. The host can refuse a procedure before entry when its effect analysis establishes that it must reach an unavailable facility. A call reached during execution raises the corresponding VBA error.
    - **strict:** for checking, CI and servers. Every windows-class construct, and anything without a native or model verdict on this host, is rejected, and host-class uses are listed.
    - **native:** for code written for the host itself, such as a Linux script. No dialect emulation.
 
-A rejection happens at load, like a compile error in VBE. It names the construct, the line, the host and the reason, never as a run-time surprise. The guarded way VBA already runs under Excel is the model here: triage first (dc-vba-triage-policy), then the run.
+Strict load diagnostics name the construct, location, host, and reason. The static report is available independently of execution through `check --portability` and the host API.
+
+On a non-Windows native host, `HostPolicy::windows_faithful` enables faithful runtime handling for `Shell` and Windows DLL calls. The CLI sets it when selecting `windows-faithful`. An embedder can supply `HostPolicy::windows_shell_commands` for the project. Each entry maps one exact VBA command line to an explicit executable and argument list. An absent mapping raises the file-not-found error. Process policy still applies to mapped commands.
 
 ## 6. Shims and models
 

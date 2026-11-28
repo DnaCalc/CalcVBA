@@ -140,3 +140,51 @@ End Sub
         );
     }
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn faithful_session_refuses_a_resolved_class_field_with_an_unknown_type() {
+    use calcvba_host::portability::Mode;
+    use calcvba_host_api::RuntimeProvider;
+
+    let mut project = api::Project::module(
+        "Main",
+        r#"Option Explicit
+Private entered As Long
+Public Function Answer() As Long
+    Answer = 42 + entered
+End Function
+Public Sub UsesField()
+    Dim holder As WidgetHolder
+    Set holder = New WidgetHolder
+    entered = 1
+    Set holder.Widget = Nothing
+End Sub
+"#,
+    );
+    project.modules.push(api::SourceModule {
+        name: "WidgetHolder".into(),
+        source: "Option Explicit\nPublic Widget As MissingControls.Widget\n".into(),
+    });
+    project
+        .references
+        .push(api::TypeLibraryReference::named("MissingControls"));
+    let provider = Provider::default()
+        .with_class_modules(vec!["WidgetHolder".into()])
+        .with_portability_mode(Mode::WindowsFaithful);
+    for backend in [api::Backend::Interpreter, api::Backend::Jit] {
+        let session = provider.load(&project, backend, api::HOST_API_ABI).unwrap();
+        let affected = session
+            .bind("Main", "UsesField", api::ProcedureKind::Sub)
+            .unwrap();
+        let error = session.call_bound(&affected, &[], 10_000).unwrap_err();
+        assert!(error.to_string().contains("MissingControls"), "{error}");
+        let answer = session
+            .bind("Main", "Answer", api::ProcedureKind::Function)
+            .unwrap();
+        assert_eq!(
+            session.call_bound(&answer, &[], 10_000).unwrap(),
+            api::Variant::from_i32(42)
+        );
+    }
+}

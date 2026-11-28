@@ -206,29 +206,48 @@ pub(crate) struct BoundProcBody {
 
 impl<'a> ProcLower<'a> {
     pub(crate) fn unavailable_type_library_in(&self, node: SyntaxNode<'_>) -> Option<String> {
-        let ty = match node.kind() {
-            SyntaxKind::TypeRef | SyntaxKind::NewExpr => {
-                Some(calcvba_symbol::scanner::type_ref_node(node))
-            }
-            SyntaxKind::IdentExpr => node
-                .ident_name_token()
-                .and_then(|name| self.resolve(name.text))
-                .and_then(|binding| binding.symbol)
-                .map(|symbol| self.symbol_type(symbol)),
-            SyntaxKind::MemberExpr => node
-                .member_name_token()
-                .and_then(|name| self.qualified_namespace_member_binding(node, name.text))
-                .and_then(|binding| binding.symbol)
-                .map(|symbol| self.symbol_type(symbol)),
-            _ => None,
-        };
-        ty.as_ref()
-            .and_then(|ty| self.g.env.unavailable_type_library_for(ty))
+        self.portability_value_type(node)
+            .and_then(|ty| self.g.env.unavailable_type_library_for(&ty))
             .or_else(|| {
                 node.child_nodes()
                     .into_iter()
                     .find_map(|child| self.unavailable_type_library_in(child))
             })
+    }
+
+    fn portability_value_type(&self, node: SyntaxNode<'_>) -> Option<VarTypeRef> {
+        let binding = match node.kind() {
+            SyntaxKind::TypeRef | SyntaxKind::NewExpr => {
+                return Some(calcvba_symbol::scanner::type_ref_node(node));
+            }
+            SyntaxKind::IdentExpr if node.ident_is_me() => {
+                return self.info.class_name.clone().map(VarTypeRef::Object);
+            }
+            SyntaxKind::IdentExpr => self.resolve(node.ident_name_token()?.text)?,
+            SyntaxKind::MemberExpr if !node.member_is_bang() => {
+                let name = node.member_name_token()?.text;
+                if let Some(binding) = self.qualified_namespace_member_binding(node, name) {
+                    binding
+                } else {
+                    let receiver = self.portability_value_type(node.member_receiver()?)?;
+                    if let VarTypeRef::Udt(udt) = &receiver {
+                        let (_, field) = self.g.env.udt_field(udt, name)?;
+                        return Some(field.clone());
+                    }
+                    self.resolve_member(&receiver, name, None)?
+                }
+            }
+            SyntaxKind::IndexExpr => {
+                return match self.portability_value_type(node.index_base()?)? {
+                    VarTypeRef::Array(element) | VarTypeRef::FixedArray { element, .. } => {
+                        Some(*element)
+                    }
+                    _ => None,
+                };
+            }
+            _ => return None,
+        };
+        binding.symbol.map(|symbol| self.symbol_type(symbol))
     }
 
     /// The per-instance default record-init statements for this proc, when it is a

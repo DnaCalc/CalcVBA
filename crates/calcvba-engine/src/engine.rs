@@ -1068,17 +1068,25 @@ impl Engine {
         }
     }
 
+    fn portability_mode_for(
+        &self,
+        projects: &[calcvba_symbol::manifest::SymbolProjectManifest],
+    ) -> calcvba_symbol::portability::Mode {
+        use calcvba_symbol::portability::Mode;
+        self.portability_mode.unwrap_or_else(|| {
+            projects
+                .last()
+                .map(Mode::for_project)
+                .unwrap_or(Mode::Native)
+        })
+    }
+
     fn check_portability(
         &self,
         projects: &[calcvba_symbol::manifest::SymbolProjectManifest],
     ) -> Result<(), PhaseDiagnostic> {
         use calcvba_symbol::portability::Mode;
-        let Some(entry) = projects.last() else {
-            return Ok(());
-        };
-        let mode = self
-            .portability_mode
-            .unwrap_or_else(|| Mode::for_project(entry));
+        let mode = self.portability_mode_for(projects);
         if mode != Mode::Strict {
             return Ok(());
         }
@@ -1355,7 +1363,11 @@ impl Engine {
             .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
             .collect();
         let _policy = self.host_services.enter_com_policy();
-        let programs = match calcvba_bind::bind_projects(&closure, &self.bind_types()) {
+        let programs = match calcvba_bind::bind_projects_with_portability(
+            &closure,
+            &self.bind_types(),
+            self.portability_mode_for(&closure),
+        ) {
             Ok(p) => p,
             Err(e) => {
                 return Err(PhaseDiagnostic::from_diagnostic(OxDiagnostic::error(
@@ -1448,7 +1460,11 @@ impl Engine {
             .map(|manifest| self.manifest_with_runtime_conditional_target(manifest))
             .collect();
         let _policy = self.host_services.enter_com_policy();
-        let programs = match calcvba_bind::bind_projects(&closure, &self.bind_types()) {
+        let programs = match calcvba_bind::bind_projects_with_portability(
+            &closure,
+            &self.bind_types(),
+            self.portability_mode_for(&closure),
+        ) {
             Ok(p) => p,
             Err(e) => return Vm3Snapshot::Failed(format!("bind: {e}")),
         };
@@ -1623,7 +1639,11 @@ impl Engine {
             calcvba_runtime::ansi::enter_codepage(self.effective_codepage(manifest.codepage));
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
         let _policy = self.host_services.enter_com_policy();
-        let program = match calcvba_bind::bind_program(&manifest, &self.bind_types()) {
+        let program = match calcvba_bind::bind_program_with_portability(
+            &manifest,
+            &self.bind_types(),
+            self.portability_mode_for(std::slice::from_ref(&manifest)),
+        ) {
             Ok(p) => p,
             Err(e) => return Vm3Snapshot::Failed(format!("bind: {e}")),
         };
@@ -1665,7 +1685,11 @@ impl Engine {
     ) -> SnapshotOutcome {
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
         let _policy = self.host_services.enter_com_policy();
-        let program = match calcvba_bind::bind_program(&manifest, &self.bind_types()) {
+        let program = match calcvba_bind::bind_program_with_portability(
+            &manifest,
+            &self.bind_types(),
+            self.portability_mode_for(std::slice::from_ref(&manifest)),
+        ) {
             Ok(p) => p,
             Err(e) => return SnapshotOutcome::Failed(format!("bind: {e}")),
         };
@@ -1750,7 +1774,11 @@ impl Engine {
     ) -> SnapshotOutcome {
         let manifest = self.manifest_with_runtime_conditional_target(manifest);
         let _policy = self.host_services.enter_com_policy();
-        let program = match calcvba_bind::bind_program(&manifest, &self.bind_types()) {
+        let program = match calcvba_bind::bind_program_with_portability(
+            &manifest,
+            &self.bind_types(),
+            self.portability_mode_for(std::slice::from_ref(&manifest)),
+        ) {
             Ok(p) => p,
             Err(e) => return SnapshotOutcome::Failed(format!("bind: {e}")),
         };

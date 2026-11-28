@@ -322,6 +322,7 @@ pub struct ResolutionEnvironment {
     /// references have no source scope, but still need to act as namespace
     /// qualifiers for `Lib.Widget` / `Lib.Module.Member`.
     external_project_names: HashSet<String>,
+    unavailable_type_libraries: Vec<String>,
 }
 
 impl ResolutionEnvironment {
@@ -376,6 +377,32 @@ impl ResolutionEnvironment {
         self.providers
             .iter()
             .any(|provider| provider.is_known_object_type(type_name))
+    }
+
+    /// The explicitly qualified, unresolved library a declaration or New uses.
+    /// An unqualified type gives no evidence of which missing library owns it.
+    pub fn unavailable_type_library_in(&self, node: SyntaxNode<'_>) -> Option<&str> {
+        if self.unavailable_type_libraries.is_empty() {
+            return None;
+        }
+        let kind = node.kind();
+        if matches!(kind, SyntaxKind::TypeRef | SyntaxKind::NewExpr) {
+            let name = type_ref_name(node);
+            if let Some((library, _)) = name.split_once('.')
+                && let Some(unavailable) = self
+                    .unavailable_type_libraries
+                    .iter()
+                    .find(|unavailable| unavailable.eq_ignore_ascii_case(library))
+                && !self.is_known_object_type(&name)
+                && !self.is_udt(&name)
+                && !self.is_enum_type(&name)
+            {
+                return Some(unavailable);
+            }
+        }
+        node.child_nodes()
+            .into_iter()
+            .find_map(|child| self.unavailable_type_library_in(child))
     }
     /// The application object that evaluates an unqualified foreign name `[text]`: the first,
     /// in reference order, whose interface has a `DISPID_EVALUATE` member (Excel's `Global`).
@@ -796,12 +823,13 @@ fn resolve_typelib_provider_closures(
     requests: Vec<calcvba_com::TypeLibResolveRequest>,
     library_requests: &HashMap<String, calcvba_com::TypeLibResolveRequest>,
     used_type_names: &HashSet<String>,
-) -> Vec<ComTypeLibProvider> {
+) -> (Vec<ComTypeLibProvider>, Vec<String>) {
     // VBA sees a referenced typelib's returned interfaces as part of the same
     // referenced library, or of another referenced type library when qualified
     // (`OtherLib.Iface`). Follow named object-return descriptors across the
     // project's referenced type libraries so chains like `a.B.C` bind early.
     let mut blobs = Vec::new();
+    let mut unavailable = Vec::new();
     let mut queue = VecDeque::from(requests);
     let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
 
@@ -818,6 +846,9 @@ fn resolve_typelib_provider_closures(
         }
 
         let Some(blob) = typelibs.resolve(&request) else {
+            if request.requested_coclass.is_none() {
+                unavailable.push(request.reference_name);
+            }
             continue;
         };
 
@@ -906,7 +937,7 @@ fn resolve_typelib_provider_closures(
         blobs.push(ComTypeLibProvider::with_interface_iid(blob, iid));
     }
 
-    blobs
+    (blobs, unavailable)
 }
 
 fn push_typelib_followup(
@@ -1863,13 +1894,13 @@ pub fn build_resolution_environment_with_project_surfaces(
             });
         }
     }
-    let com_providers = resolve_typelib_provider_closures(
+    let (com_providers, unavailable_type_libraries) = resolve_typelib_provider_closures(
         typelibs,
         type_library_roots,
         &library_requests,
         &used_type_names,
     );
-    let host_blobs = resolve_typelib_provider_closures(
+    let (host_blobs, _) = resolve_typelib_provider_closures(
         typelibs,
         host_roots,
         &library_requests,
@@ -1921,5 +1952,6 @@ pub fn build_resolution_environment_with_project_surfaces(
         enum_types,
         ambiguous_type_names,
         external_project_names,
+        unavailable_type_libraries,
     })
 }

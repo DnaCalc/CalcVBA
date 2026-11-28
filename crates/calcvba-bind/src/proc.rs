@@ -80,9 +80,13 @@ impl<'a> Lower<'a> {
     pub(crate) fn static_local_inits(
         &'a self,
         decls: &[SyntaxNode<'a>],
+        unavailable: &[Option<&str>],
     ) -> Result<Vec<CoreStmt>, BindError> {
         let mut out = Vec::new();
-        for (info, decl) in self.ids.procs.iter().zip(decls.iter()) {
+        for ((info, decl), unavailable) in self.ids.procs.iter().zip(decls).zip(unavailable) {
+            if unavailable.is_some() {
+                continue;
+            }
             let Some(block) = decl.body_block() else {
                 continue;
             };

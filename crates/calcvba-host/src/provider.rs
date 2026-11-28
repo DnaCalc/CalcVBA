@@ -156,7 +156,7 @@ impl Provider {
                 .map(crate::portability::Mode::for_project)
                 .unwrap_or(crate::portability::Mode::Native)
         });
-        if mode != crate::portability::Mode::Native {
+        if mode == crate::portability::Mode::Strict {
             let portability_manifests = self.build_graph_manifests(graph, true)?;
             mode.check(&portability_manifests, crate::portability::Host::current())
                 .map_err(|diagnostic| api::Error::Compile(diagnostic.render_human()))?;
@@ -167,12 +167,8 @@ impl Provider {
             self.dictionary,
             self.host.permits_com_activation(),
         );
-        let mut module = Module::load_project_graph_with_portability(
-            &manifests,
-            &resolver,
-            crate::portability::Mode::Native,
-        )
-        .map_err(error)?;
+        let mut module =
+            Module::load_project_graph_unchecked(&manifests, &resolver, mode).map_err(error)?;
         // Reuse the normal compiler retention pass for every unit, including
         // untyped Object/Variant defaults absent from source declarations.
         for program in module
@@ -309,7 +305,7 @@ impl Provider {
         let mode = self
             .portability_mode
             .unwrap_or_else(|| crate::portability::Mode::for_project(&manifest));
-        if mode != crate::portability::Mode::Native {
+        if mode == crate::portability::Mode::Strict {
             let (portability_manifest, _) = self.build_project_manifest(project, true)?;
             mode.check(
                 std::slice::from_ref(&portability_manifest),
@@ -323,12 +319,8 @@ impl Provider {
             self.dictionary,
             self.host.permits_com_activation(),
         );
-        let mut module = Module::load_project_with_portability(
-            &manifest,
-            &resolver,
-            crate::portability::Mode::Native,
-        )
-        .map_err(error)?;
+        let mut module =
+            Module::load_project_unchecked(&manifest, &resolver, mode).map_err(error)?;
         // An untyped Object/Variant can arrive from any explicitly supplied
         // host interface, even when no source declaration mentions that type.
         // Retain its authoritative default plan before publishing code/handles.

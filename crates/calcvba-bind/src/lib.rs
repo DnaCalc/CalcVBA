@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use calcvba_bundle::coreir::{
     CoreArg, CoreAsNew, CoreClass, CoreClassAsNewField, CoreConst, CoreLocal, CoreLongPtrWidth,
-    CorePlace, CoreProc, CoreProgram, CoreValue, LabelId, LocalId, ProcId,
+    CorePlace, CoreProc, CoreProgram, CoreStmt, CoreValue, ErrorOp, LabelId, LocalId, ProcId,
 };
 use calcvba_bundle::{
     BundleExport, BundleImport, ComClassExport, EventRoute, ExportTarget, ExportToken,
@@ -36,6 +36,7 @@ use calcvba_symbol::manifest::{ModuleKind, SymbolProjectManifest};
 use calcvba_symbol::model::{
     ScopeId, SymbolId, SymbolImpl, SymbolKind, SymbolNamespace, fold_identifier,
 };
+use calcvba_symbol::portability::Mode;
 use calcvba_symbol::provider::{ResolutionContext, ResolutionEnvironment};
 use calcvba_symbol::signature::{BuiltinType, VarTypeRef};
 use calcvba_symbol::surface::ProjectExportSurface;
@@ -77,10 +78,18 @@ pub fn bind_program(
     manifest: &SymbolProjectManifest,
     typelibs: &dyn TypeLibResolver,
 ) -> Result<CoreProgram, BindError> {
+    bind_program_with_portability(manifest, typelibs, Mode::Native)
+}
+
+pub fn bind_program_with_portability(
+    manifest: &SymbolProjectManifest,
+    typelibs: &dyn TypeLibResolver,
+    mode: Mode,
+) -> Result<CoreProgram, BindError> {
     let manifest =
         &*calcvba_symbol::scripting::with_builtin_scripting(manifest, typelibs.dictionary_source());
     let env = build_resolution_environment(manifest, typelibs)?;
-    bind_one(&env, manifest)
+    bind_one(&env, manifest, mode)
 }
 
 /// Compiler-owned procedure identity for hosting. Includes project-private
@@ -100,6 +109,14 @@ pub fn bind_program_with_procedures(
     manifest: &SymbolProjectManifest,
     typelibs: &dyn TypeLibResolver,
 ) -> Result<(CoreProgram, Vec<ModuleProcedure>), BindError> {
+    bind_program_with_procedures_and_portability(manifest, typelibs, Mode::Native)
+}
+
+pub fn bind_program_with_procedures_and_portability(
+    manifest: &SymbolProjectManifest,
+    typelibs: &dyn TypeLibResolver,
+    mode: Mode,
+) -> Result<(CoreProgram, Vec<ModuleProcedure>), BindError> {
     use calcvba_symbol::{
         model::Visibility,
         scanner::{decl_visibility, option_private_module},
@@ -107,7 +124,7 @@ pub fn bind_program_with_procedures(
     let manifest =
         &*calcvba_symbol::scripting::with_builtin_scripting(manifest, typelibs.dictionary_source());
     let env = build_resolution_environment(manifest, typelibs)?;
-    let core = bind_one(&env, manifest)?;
+    let core = bind_one(&env, manifest, mode)?;
     let mut procedures = Vec::new();
     let mut index = 0;
     for module in env.modules() {
@@ -153,7 +170,7 @@ pub fn bind_program_with_project_surfaces(
         typelibs,
         external_project_surfaces,
     )?;
-    bind_one(&env, manifest)
+    bind_one(&env, manifest, Mode::Native)
 }
 
 /// Bind every referenced project plus the active project — the **whole transitive
@@ -170,6 +187,14 @@ pub fn bind_program_with_project_surfaces(
 pub fn bind_projects(
     closure_leaf_first: &[SymbolProjectManifest],
     typelibs: &dyn TypeLibResolver,
+) -> Result<Vec<CoreProgram>, BindError> {
+    bind_projects_with_portability(closure_leaf_first, typelibs, Mode::Native)
+}
+
+pub fn bind_projects_with_portability(
+    closure_leaf_first: &[SymbolProjectManifest],
+    typelibs: &dyn TypeLibResolver,
+    mode: Mode,
 ) -> Result<Vec<CoreProgram>, BindError> {
     // The closure is already deduped by project FILE (path); two entries sharing a
     // unit NAME are therefore two *different* projects colliding on a name — bind
@@ -189,7 +214,7 @@ pub fn bind_projects(
             typelibs.dictionary_source(),
         );
         let env = build_resolution_environment(manifest, typelibs)?;
-        programs.push(bind_one(&env, manifest)?);
+        programs.push(bind_one(&env, manifest, mode)?);
     }
     Ok(programs)
 }
@@ -198,6 +223,7 @@ pub fn bind_projects(
 fn bind_one(
     env: &ResolutionEnvironment,
     manifest: &SymbolProjectManifest,
+    mode: Mode,
 ) -> Result<CoreProgram, BindError> {
     let ids = IdAllocator::build(env, manifest)?;
     let event_routes = build_event_routes(env, &ids, manifest)?;
@@ -221,9 +247,36 @@ fn bind_one(
             decls.len()
         )));
     }
+    let unavailable: Vec<_> = decls
+        .iter()
+        .map(|decl| {
+            if mode == Mode::WindowsFaithful {
+                env.unavailable_type_library_in(*decl)
+            } else {
+                None
+            }
+        })
+        .collect();
     let mut procs: Vec<CoreProc> = Vec::with_capacity(ids.procs.len());
-    for (info, decl) in ids.procs.iter().zip(decls.iter()) {
-        let bound_body = lower.bind_proc_body(info, *decl)?;
+    for ((info, decl), unavailable) in ids.procs.iter().zip(&decls).zip(&unavailable) {
+        let bound_body = if let Some(library) = unavailable {
+            proc::BoundProcBody {
+                body: vec![CoreStmt::Error(ErrorOp::Raise {
+                    number: CoreValue::Const(CoreConst::I32(429)),
+                    source: None,
+                    description: Some(Box::new(CoreValue::Const(CoreConst::Str(format!(
+                        "Type library {library} is unavailable"
+                    ))))),
+                    help_file: None,
+                    help_context: None,
+                    inherit: false,
+                })],
+                label_lines: Vec::new(),
+                locals: info.locals.clone(),
+            }
+        } else {
+            lower.bind_proc_body(info, *decl)?
+        };
         procs.push(CoreProc {
             name: info.name.clone(),
             kind: info.kind,
@@ -240,7 +293,7 @@ fn bind_one(
     // proc rather than splicing into `Main`, because COM activation-style hosts can
     // enter directly through class members without running the top-level entry proc.
     let mut inits = lower.module_global_array_inits()?;
-    inits.extend(lower.static_local_inits(&decls)?);
+    inits.extend(lower.static_local_inits(&decls, &unavailable)?);
     let global_initializer = if inits.is_empty() {
         None
     } else {

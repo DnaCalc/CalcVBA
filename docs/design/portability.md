@@ -20,6 +20,10 @@ The [portability matrix](../../crates/calcvba-symbol/src/portability/matrix.rs) 
 
 The Excel object model (Workbooks, Range, Application.PathSeparator...) is a host concern: OneCalc and DNA Calc provide it. It needs the same treatment separately.
 
+The report's `references` array lists the source project's ordered type-library references, including unused ones. Each entry has `project`, `name`, `guid` (nullable) and `state` (`implemented`, `types_only` or `unknown`). The static checker uses its own catalogue and leaves unknown references visible on every host. The `findings` array also records their `reject` verdict. Source-less images report retained interfaces in `findings`; they lack the source project's reference inventory.
+
+When the faithful loader cannot resolve a library, procedures with an explicitly qualified declaration or `New` using one of its types refuse on entry and name the library. Other procedures can load and run in the same project.
+
 ## 1. References
 
 | Dialect | Reference | State |

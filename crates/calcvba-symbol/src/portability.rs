@@ -370,6 +370,23 @@ pub struct Report {
     pub verdict: Verdict,
     pub findings: Vec<Finding>,
     pub parse_errors: Vec<ParseIssue>,
+    pub references: Vec<TypeLibraryFinding>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeLibraryState {
+    Implemented,
+    TypesOnly,
+    Unknown,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TypeLibraryFinding {
+    pub project: String,
+    pub name: String,
+    pub guid: Option<String>,
+    pub state: TypeLibraryState,
 }
 
 #[derive(Debug, Serialize)]
@@ -394,6 +411,7 @@ fn check_project_inner(
         verdict: Verdict::Portable,
         findings: Vec::new(),
         parse_errors: Vec::new(),
+        references: Vec::new(),
     };
     for project in projects {
         let constants = base_cc_constants_for_target(
@@ -467,10 +485,14 @@ fn check_project_inner(
                             .map_or_else(|| name.clone(), |guid| format!("{name} ({guid})")),
                     );
                     let normalized_guid = guid.as_deref().unwrap_or("").trim_matches(['{', '}']);
-                    let (class, support) = if normalized_guid
+                    let (class, support, state) = if normalized_guid
                         .eq_ignore_ascii_case("000204ef-0000-0000-c000-000000000046")
                     {
-                        (FeatureClass::Pure, Support::Native)
+                        (
+                            FeatureClass::Pure,
+                            Support::Native,
+                            TypeLibraryState::Implemented,
+                        )
                     } else if [
                         "00020813-0000-0000-c000-000000000046",
                         "00020430-0000-0000-c000-000000000046",
@@ -479,24 +501,42 @@ fn check_project_inner(
                     .iter()
                     .any(|id| normalized_guid.eq_ignore_ascii_case(id))
                     {
-                        (FeatureClass::Host, Support::Host)
+                        (
+                            FeatureClass::Host,
+                            Support::Host,
+                            TypeLibraryState::Implemented,
+                        )
                     } else if normalized_guid
                         .eq_ignore_ascii_case("420b2830-e718-11cf-893d-00a0c9054228")
                     {
+                        let dictionary_only =
+                            scripting_reference_uses_only_dictionary(&prepared, &project_names);
                         let support = if scanner.report.host == Host::Windows {
                             Support::Native
-                        } else if scripting_reference_uses_only_dictionary(
-                            &prepared,
-                            &project_names,
-                        ) {
+                        } else if dictionary_only {
                             Support::Replace
                         } else {
                             Support::Reject
                         };
-                        (FeatureClass::Windows, support)
+                        let state = if dictionary_only || scanner.report.host == Host::Windows {
+                            TypeLibraryState::Implemented
+                        } else {
+                            TypeLibraryState::Unknown
+                        };
+                        (FeatureClass::Windows, support, state)
                     } else {
-                        (FeatureClass::Windows, scanner.windows_native())
+                        (
+                            FeatureClass::Windows,
+                            Support::Reject,
+                            TypeLibraryState::Unknown,
+                        )
                     };
+                    scanner.report.references.push(TypeLibraryFinding {
+                        project: project.project_name.clone(),
+                        name: name.clone(),
+                        guid: guid.clone(),
+                        state,
+                    });
                     scanner.record("Early-bound reference", None, class, support, detail, None);
                 }
                 ProjectReference::Native { name, path } => {

@@ -162,15 +162,17 @@ impl Module {
     ) -> Result<Self, Error> {
         mode.check(std::slice::from_ref(manifest), portability::Host::current())
             .map_err(|diagnostic| Error::Compile(diagnostic.render_human()))?;
-        Self::load_project_unchecked(manifest, resolver)
+        Self::load_project_unchecked(manifest, resolver, mode)
     }
 
     fn load_project_unchecked(
         manifest: &sym::SymbolProjectManifest,
         resolver: &dyn TypeLibResolver,
+        mode: portability::Mode,
     ) -> Result<Self, Error> {
-        let (core, catalogue) = calcvba_bind::bind_program_with_procedures(manifest, resolver)
-            .map_err(|e| Error::Compile(e.to_string()))?;
+        let (core, catalogue) =
+            calcvba_bind::bind_program_with_procedures_and_portability(manifest, resolver, mode)
+                .map_err(|e| Error::Compile(e.to_string()))?;
         // The host's typed-stack interpreter has no `VT_BYREF` cells yet (step 10 of the
         // VARIANT-layout programme moves it onto the shared session): elements and fields passed
         // ByRef keep copy-in and copy-out here, as in native builds.
@@ -301,9 +303,17 @@ impl Module {
     ) -> Result<Self, Error> {
         mode.check(manifests, portability::Host::current())
             .map_err(|diagnostic| Error::Compile(diagnostic.render_human()))?;
+        Self::load_project_graph_unchecked(manifests, resolver, mode)
+    }
+
+    fn load_project_graph_unchecked(
+        manifests: &[sym::SymbolProjectManifest],
+        resolver: &dyn TypeLibResolver,
+        mode: portability::Mode,
+    ) -> Result<Self, Error> {
         let mut modules = manifests
             .iter()
-            .map(|m| Self::load_project_unchecked(m, resolver))
+            .map(|m| Self::load_project_unchecked(m, resolver, mode))
             .collect::<Result<Vec<_>, _>>()?;
         let mut root = modules
             .pop()

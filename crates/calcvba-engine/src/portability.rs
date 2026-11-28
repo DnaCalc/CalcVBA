@@ -59,6 +59,7 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
         verdict: Verdict::Portable,
         findings: Vec::new(),
         parse_errors: Vec::new(),
+        references: Vec::new(),
     };
     let library = calcvba_bundle::vba_library_bundle();
 

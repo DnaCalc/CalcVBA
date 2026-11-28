@@ -117,17 +117,30 @@ pub fn bind_program_with_procedures_and_portability(
     typelibs: &dyn TypeLibResolver,
     mode: Mode,
 ) -> Result<(CoreProgram, Vec<ModuleProcedure>), BindError> {
-    use calcvba_symbol::{
-        model::Visibility,
-        scanner::{decl_visibility, option_private_module},
-    };
     let manifest =
         &*calcvba_symbol::scripting::with_builtin_scripting(manifest, typelibs.dictionary_source());
     let env = build_resolution_environment(manifest, typelibs)?;
     let core = bind_one(&env, manifest, mode)?;
+    let procedures = module_procedures(&env, manifest, &core, |_, kind| {
+        kind == &ModuleKind::Procedural
+    });
+    Ok((core, procedures))
+}
+
+fn module_procedures(
+    env: &ResolutionEnvironment,
+    manifest: &SymbolProjectManifest,
+    core: &CoreProgram,
+    include: impl Fn(&str, &ModuleKind) -> bool,
+) -> Vec<ModuleProcedure> {
+    use calcvba_symbol::{
+        model::Visibility,
+        scanner::{decl_visibility, option_private_module},
+    };
     let mut procedures = Vec::new();
     let mut index = 0;
     for module in env.modules() {
+        let included = include(module.module_name, &module.module_kind);
         let private_module = option_private_module(module.syntax)
             || manifest
                 .modules
@@ -140,7 +153,7 @@ pub fn bind_program_with_procedures_and_portability(
                 SyntaxKind::SubDecl | SyntaxKind::FunctionDecl | SyntaxKind::PropertyDecl
             ) && node.proc_name_token().is_some()
         }) {
-            if module.module_kind == ModuleKind::Procedural {
+            if included {
                 procedures.push(ModuleProcedure {
                     index,
                     module: module.module_name.into(),
@@ -152,7 +165,7 @@ pub fn bind_program_with_procedures_and_portability(
             index += 1;
         }
     }
-    Ok((core, procedures))
+    procedures
 }
 
 /// Bind one source project against already-compiled referenced project
@@ -196,6 +209,47 @@ pub fn bind_projects_with_portability(
     typelibs: &dyn TypeLibResolver,
     mode: Mode,
 ) -> Result<Vec<CoreProgram>, BindError> {
+    bind_project_units(closure_leaf_first, typelibs, mode, |core, _, _, _| core)
+}
+
+pub struct BoundSourceProject {
+    pub core: CoreProgram,
+    pub procedures: Vec<ModuleProcedure>,
+}
+
+/// Bind a closure and publish the identities of its original source procedures.
+/// Compiler-injected code remains in the bound project so its effects propagate.
+pub fn bind_projects_with_source_procedures(
+    closure_leaf_first: &[SymbolProjectManifest],
+    typelibs: &dyn TypeLibResolver,
+) -> Result<Vec<BoundSourceProject>, BindError> {
+    bind_project_units(
+        closure_leaf_first,
+        typelibs,
+        Mode::Native,
+        |core, env, effective, original| {
+            let procedures = module_procedures(env, effective, &core, |name, _| {
+                original
+                    .modules
+                    .iter()
+                    .any(|module| module.module_name.eq_ignore_ascii_case(name))
+            });
+            BoundSourceProject { core, procedures }
+        },
+    )
+}
+
+fn bind_project_units<T>(
+    closure_leaf_first: &[SymbolProjectManifest],
+    typelibs: &dyn TypeLibResolver,
+    mode: Mode,
+    finish: impl Fn(
+        CoreProgram,
+        &ResolutionEnvironment,
+        &SymbolProjectManifest,
+        &SymbolProjectManifest,
+    ) -> T,
+) -> Result<Vec<T>, BindError> {
     // The closure is already deduped by project FILE (path); two entries sharing a
     // unit NAME are therefore two *different* projects colliding on a name — bind
     // none silently (it would drop a project's bundle entirely, and `Vm::link`
@@ -209,12 +263,13 @@ pub fn bind_projects_with_portability(
                 manifest.project_name
             )));
         }
-        let manifest = &*calcvba_symbol::scripting::with_builtin_scripting(
+        let effective = &*calcvba_symbol::scripting::with_builtin_scripting(
             manifest,
             typelibs.dictionary_source(),
         );
-        let env = build_resolution_environment(manifest, typelibs)?;
-        programs.push(bind_one(&env, manifest, mode)?);
+        let env = build_resolution_environment(effective, typelibs)?;
+        let core = bind_one(&env, effective, mode)?;
+        programs.push(finish(core, &env, effective, manifest));
     }
     Ok(programs)
 }

@@ -1,4 +1,4 @@
-//! Source-less portability analysis and enforcement for compiled [`OxImage`] / [`OxProgram`] units.
+//! Portability analysis for source projects and compiled [`OxImage`] / [`OxProgram`] units.
 //!
 //! Uses the same portability matrix, Win32 `Declare` shim table, portable COM registry,
 //! and mode enforcement rules as the source analyzer in `calcvba_symbol::portability`.
@@ -7,7 +7,7 @@ mod effects;
 
 use std::collections::HashMap;
 
-use calcvba_bundle::{DeclareParamType, ExportTarget, NativeImplId};
+use calcvba_bundle::{DeclareParamType, ExportTarget, ExportToken, NativeImplId};
 use calcvba_diagnostics::Diagnostic;
 use calcvba_oxir::com::ComInterface;
 use calcvba_oxir::inst::{OxAsNew, OxInst};
@@ -62,15 +62,36 @@ pub fn check_source_projects(
 
     let mut report = calcvba_symbol::portability::check_project(projects, host)?;
     if report.analysis_complete
-        && let Ok(core) = calcvba_bind::bind_projects(projects, &SourceTypes)
-        && let Ok(programs) = core
+        && let Ok(units) =
+            calcvba_bind::bind_projects_with_source_procedures(projects, &SourceTypes)
+        && let Ok(programs) = units
             .iter()
-            .map(calcvba_oxir::elaborate::elaborate)
+            .map(|unit| calcvba_oxir::elaborate::elaborate(&unit.core))
             .collect::<Result<Vec<_>, _>>()
     {
         let programs: Vec<_> = programs.iter().collect();
         let bound = check_programs(&programs, host, BrowserServices::default());
-        report.procedures = bound.procedures;
+        let mut originals = HashMap::new();
+        let mut offset = 0;
+        for (unit, program) in units.iter().zip(&programs) {
+            originals.extend(
+                unit.procedures
+                    .iter()
+                    .map(|proc| (offset + proc.index, proc)),
+            );
+            offset += program.funcs.len();
+        }
+        report.procedures = bound
+            .procedures
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, mut effects)| {
+                let original = originals.get(&index)?;
+                effects.module.clone_from(&original.module);
+                effects.procedure.clone_from(&original.name);
+                Some(effects)
+            })
+            .collect();
         report.effects_complete = bound.effects_complete;
     }
     Ok(report)
@@ -204,13 +225,34 @@ pub fn check_programs(programs: &[&OxProgram], host: Host, browser: BrowserServi
         }
 
         // 4. Instructions across every compiled procedure.
-        for func in &program.funcs {
+        let mut modules: HashMap<_, _> = program
+            .exports
+            .iter()
+            .filter_map(|export| match (&export.token, export.target) {
+                (ExportToken::ModuleFunc { module, .. }, ExportTarget::Proc(index)) => {
+                    Some((index, module.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        for class in &program.classes {
+            modules.extend(
+                class
+                    .methods
+                    .iter()
+                    .map(|method| method.proc)
+                    .chain(class.initialize)
+                    .chain(class.terminate)
+                    .map(|proc| (proc.0, class.name.as_str())),
+            );
+        }
+        for (index, func) in program.funcs.iter().enumerate() {
             let first_finding = report.findings.len();
-            let module = func
-                .name
-                .split_once('.')
-                .map(|(module, _)| module)
-                .unwrap_or(func.name.as_str());
+            let module = modules
+                .get(&index)
+                .copied()
+                .or_else(|| func.name.split_once('.').map(|(module, _)| module))
+                .unwrap_or_default();
             let mut procedure = effects::Procedure {
                 project: project.into(),
                 module: module.into(),
@@ -383,7 +425,7 @@ fn record(
     report.verdict = report.verdict.max(verdict_for_support(support));
     report.findings.push(Finding {
         project: project.to_owned(),
-        module: module.map(str::to_owned),
+        module: module.filter(|name| !name.is_empty()).map(str::to_owned),
         procedure: None,
         line: None,
         feature: feature.to_owned(),

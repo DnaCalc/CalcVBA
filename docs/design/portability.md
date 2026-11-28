@@ -34,7 +34,7 @@ The Excel object model (Workbooks, Range, Application.PathSeparator...) is a hos
 | `parse_errors` | Rows carry `project`, `module`, `line` and `message`. |
 | `references` | Ordered source type-library references, including unused ones. Rows carry `project`, `name`, `guid` (nullable) and `state` (`implemented`, `types_only` or `unknown`). |
 | `effects_complete` | `true` when a bound procedure graph was available. For source, this requires binding and elaboration with the available static type information. |
-| `procedures` | Bound rows carry `project`, `module`, `procedure`, `status`, `may`, `must` and `unknown`. Each effect carries `feature`, nullable `detail` and a finding verdict. |
+| `procedures` | Bound rows carry `project`, `module`, `procedure`, `status`, `may`, `must` and `unknown`. Source reports list original procedures with their declared modules. A source-less image can have an empty module name when it lacks module metadata. Each effect carries `feature`, nullable `detail` and a finding verdict. |
 
 Finding verdicts use the shared vocabulary `native`, `model`, `host`, `shim`, `replace`, `mediated` and `reject`. The static checker uses its catalogue and reports unknown references on every host. Their `findings` rows carry `reject`. In source-less images, `findings` include retained interfaces and `references` is empty. Compiled findings can identify a procedure without a source line.
 

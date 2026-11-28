@@ -75,6 +75,11 @@ End Sub
     let reports = [inspect(&source), inspect(&output_dir.join("Probe.oxi"))];
     fs::remove_dir_all(&root).unwrap();
 
+    let source_rows = reports[0]["procedures"].as_array().unwrap();
+    assert_eq!(source_rows.len(), 6, "{source_rows:?}");
+    let source_module = source.display().to_string();
+    assert!(source_rows.iter().all(|row| row["module"] == source_module));
+
     for report in reports {
         assert_eq!(report["effects_complete"], true, "{report}");
         let procedures = report["procedures"].as_array().unwrap();
